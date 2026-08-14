@@ -33,12 +33,16 @@ class Session:
             # Click login button
             self.page.click('button[type="submit"]')
             
-            # Wait for navigation or 2FA
-            time.sleep(15)
+            # Wait for navigation or 2FA/verification to complete (checking URL for up to 60 seconds)
+            logger.info("Waiting for login verification/2FA (up to 60 seconds)...", step="login")
+            for _ in range(60):
+                if "feed" in self.page.url:
+                    break
+                time.sleep(1)
             
             # Check if login was successful
             if "feed" in self.page.url or "checkpoint" in self.page.url:
-                logger.info("Login successful (or 2FA required)", step="login", event="success")
+                logger.info("Login successful (or 2FA/verification active)", step="login", event="success")
             else:
                 logger.warning("Login may have failed - unexpected URL", step="login", event="warning")
                 

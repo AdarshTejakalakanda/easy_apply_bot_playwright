@@ -126,10 +126,22 @@ class Store:
                 )
             """)
             
+            # Create sequence for autoincrement if not exists
+            con.execute("CREATE SEQUENCE IF NOT EXISTS seq_submission_events_id")
+            
+            # Ensure table has default nextval by checking constraint behavior
+            try:
+                con.execute("INSERT INTO submission_events (job_id, event_type, details) VALUES ('test_id', 'test_type', 'test_details')")
+                con.execute("DELETE FROM submission_events WHERE job_id = 'test_id'")
+            except Exception as test_err:
+                if "constraint" in str(test_err).lower() or "not null" in str(test_err).lower():
+                    log.info("Migrating submission_events table to support autoincrement...")
+                    con.execute("DROP TABLE IF EXISTS submission_events")
+            
             # Create submission events table for granular tracking
             con.execute("""
                 CREATE TABLE IF NOT EXISTS submission_events (
-                    event_id INTEGER PRIMARY KEY,
+                    event_id INTEGER DEFAULT nextval('seq_submission_events_id') PRIMARY KEY,
                     job_id VARCHAR,
                     event_type VARCHAR,  -- 'user_confirmed', 'submit_clicked', 'success', 'error'
                     event_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

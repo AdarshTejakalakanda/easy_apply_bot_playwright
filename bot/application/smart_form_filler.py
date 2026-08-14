@@ -10,6 +10,7 @@ import os
 from playwright.sync_api import Page, Locator
 from bot.utils.logger import logger
 from bot.utils.selectors import LOCATORS
+from bot.application.llm_filler import LLMFiller
 
 
 class SmartFormFiller:
@@ -19,6 +20,12 @@ class SmartFormFiller:
         self.profile_data = candidate_profile.get('profile_data', {})
         # Assuming LOCATORS is defined globally or imported
         self.locator = LOCATORS 
+        self.execution_guard = None
+        self.dry_run = None
+        self.metrics = None
+        
+        # Initialize LLM Auto-filler
+        self.llm_filler = LLMFiller(candidate_profile)
         
         # Profile-specific learned answers file
         candidate_id = candidate_profile.get('id', 'default')
@@ -120,8 +127,14 @@ class SmartFormFiller:
             # Determine field type
             field_type = self._detect_field_type(field)
             
-            # Get answer from profile data
-            answer = self._get_answer(question_text, field_type)
+            # Extract HTML data type (INTEGER, SELECT_OPTION, RADIO_OPTION, BOOLEAN, SHORT_TEXT, LONG_TEXT)
+            data_type = self._extract_html_data_type(field, field_type, question_text)
+            
+            # Get options if applicable
+            options = self._extract_options(field, field_type) if field_type in ["select", "radio"] else None
+            
+            # Get answer from profile data / LLM
+            answer = self._get_answer(question_text, field_type, options, data_type)
             
             # If no answer found, ask human
             if answer is None:
@@ -134,7 +147,7 @@ class SmartFormFiller:
                 return "human_input"  # Signal that human intervention occurred
             
             # Fill the field
-            self._fill_field(field, answer, field_type)
+            self._fill_field(field, answer, field_type, data_type)
             return "auto_filled"
             
         except Exception as e:
@@ -209,20 +222,84 @@ class SmartFormFiller:
             if field.locator("input[type='checkbox']").count() > 0:
                 return "checkbox"
             
-            # Check for text input
-            if field.locator("input[type='text'], input[type='email'], input[type='tel']").count() > 0:
-                return "text"
-            
             # Check for textarea
             if field.locator("textarea").count() > 0:
                 return "textarea"
+            
+            # Check for numeric input fields (such as years of experience)
+            if field.locator("input[type='number']").count() > 0:
+                return "number"
+            
+            # Check for text/number/url inputs (any other visible input)
+            if field.locator("input:not([type='hidden'])").count() > 0:
+                return "text"
                 
         except:
             pass
         
         return "unknown"
     
-    def _get_answer(self, question_text: str, field_type: str):
+    def _extract_html_data_type(self, field: Locator, field_type: str, question_text: str = "") -> str:
+        """Extract the exact HTML accepting data type and format constraints"""
+        try:
+            if field_type == "select":
+                return "SELECT_OPTION"
+            if field_type == "radio":
+                return "RADIO_OPTION"
+            if field_type == "checkbox":
+                return "BOOLEAN"
+            if field_type == "textarea":
+                return "LONG_TEXT"
+            
+            # Inspect input element attributes
+            input_elem = field.locator("input:not([type='hidden'])").first
+            if input_elem.count() > 0:
+                attr_type = (input_elem.get_attribute("type") or "").lower()
+                inputmode = (input_elem.get_attribute("inputmode") or "").lower()
+                pattern = (input_elem.get_attribute("pattern") or "").lower()
+                
+                if attr_type == "number" or "numeric" in inputmode or "decimal" in inputmode or "[0-9]" in pattern:
+                    return "INTEGER"
+                if attr_type == "email" or "email" in inputmode:
+                    return "EMAIL_ADDRESS"
+                if attr_type == "tel" or "tel" in inputmode:
+                    return "PHONE_NUMBER"
+                if attr_type == "url" or "url" in inputmode:
+                    return "URL_LINK"
+
+            # Check question text for numeric keywords
+            q_lower = question_text.lower()
+            numeric_keywords = ["years", "how many", "count", "number of", "experience in years", "rating", "scale of", "salary", "compensation", "notice period"]
+            if any(kw in q_lower for kw in numeric_keywords):
+                return "INTEGER"
+
+        except Exception as e:
+            logger.debug(f"Error extracting HTML data type: {e}", step="extract_data_type")
+            
+        return "SHORT_TEXT" if field_type == "text" else field_type.upper()
+
+    def _extract_options(self, field: Locator, field_type: str) -> list:
+        """Extract available options for select/radio fields"""
+        options = []
+        try:
+            if field_type == "select":
+                option_elements = field.locator("select option").all()
+                for opt in option_elements:
+                    text = opt.inner_text().strip()
+                    # Skip placeholders
+                    if text and "select" not in text.lower() and len(text) > 0:
+                        options.append(text)
+            elif field_type == "radio":
+                labels = field.locator("label").all()
+                for label in labels:
+                    text = label.inner_text().strip()
+                    if text:
+                        options.append(text)
+        except Exception as e:
+            logger.debug(f"Failed to extract options: {e}", step="extract_options")
+        return options
+
+    def _get_answer(self, question_text: str, field_type: str, options: list = None, data_type: str = None):
         """
         Get answer from profile data using smart matching
         Priority: 1. Learned answers, 2. Profile data, 3. None
@@ -245,6 +322,16 @@ class SmartFormFiller:
         answer = self._match_keywords(question_lower)
         if answer:
             return answer
+        
+        # 2. Try LLM auto-filler if enabled
+        if self.llm_filler.is_enabled():
+            llm_answer = self.llm_filler.get_answer(question_text, field_type, options, data_type)
+            if llm_answer is not None:
+                # Cache it in the main learned answers file as well so it's persisted/available
+                self.learned_answers[question_text] = llm_answer
+                self._save_learned_answers()
+                logger.info(f"🤖 LLM auto-filled '{question_text}' [{data_type}] with: '{llm_answer}'", step="get_answer")
+                return llm_answer
         
         return None
     
@@ -479,38 +566,95 @@ class SmartFormFiller:
         
         return None
     
-    def _fill_field(self, field: Locator, answer: str, field_type: str):
+    def _clean_integer_answer(self, answer: str) -> str:
+        """Sanitize LLM output to a clean whole number (integer)"""
+        if not answer:
+            return "0"
+        
+        answer_str = str(answer).strip()
+        answer_lower = answer_str.lower()
+        
+        # Map boolean/yes/no answers to digits if expected field is an integer
+        if answer_lower in ["yes", "true"]:
+            return "1"
+        if answer_lower in ["no", "false"]:
+            return "0"
+
+        # Map common text numbers to digits
+        word_to_num = {
+            "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4",
+            "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9", "ten": "10"
+        }
+        if answer_lower in word_to_num:
+            return word_to_num[answer_lower]
+
+        # Extract digits or decimals (like "1.4")
+        numbers = re.findall(r'\d+\.\d+|\d+', answer_str)
+        if not numbers:
+            return "0"
+        
+        first_num = numbers[0]
+        try:
+            # Convert to float and round to nearest integer (e.g. 1.4 -> 1, 1.5 -> 2)
+            return str(int(round(float(first_num))))
+        except Exception as e:
+            # Fallback to only digits
+            only_digits = re.sub(r'\D', '', first_num)
+            return only_digits if only_digits else "0"
+
+    def _fill_field(self, field: Locator, answer: str, field_type: str, data_type: str = None):
         """Fill the field with the answer"""
         try:
             if field_type == "select":
                 select = field.locator("select").first
-                # Try by value, then by label
+                # Try by label first, then by value
                 try:
-                    select.select_option(value=answer)
-                except:
                     select.select_option(label=answer)
+                except:
+                    try:
+                        select.select_option(value=answer)
+                    except:
+                        pass
                 logger.debug(f"Selected: {answer}", step="fill_field")
                 
             elif field_type == "radio":
-                # Find radio with matching value
-                radio = field.locator(f"input[type='radio'][value='{answer}']").first
-                if radio.count() > 0:
-                    radio.click()
-                    logger.debug(f"Radio selected: {answer}", step="fill_field")
+                # Find label containing or matching the answer case-insensitively
+                label = field.locator("label").filter(has_text=re.compile(rf"^\s*{re.escape(str(answer))}\s*$", re.I)).first
+                if label.count() > 0:
+                    label.click()
+                    logger.debug(f"Radio selected via label: {answer}", step="fill_field")
+                else:
+                    # Fallback to value-based input selector
+                    radio = field.locator(f"input[type='radio'][value='{answer}']").first
+                    if radio.count() > 0:
+                        radio.click()
+                        logger.debug(f"Radio selected via input value: {answer}", step="fill_field")
                     
             elif field_type == "checkbox":
                 checkbox = field.locator("input[type='checkbox']").first
-                if answer.lower() in ['yes', 'true', '1']:
+                if str(answer).lower() in ['yes', 'true', '1', 'checked']:
                     checkbox.check()
                 else:
                     checkbox.uncheck()
                 logger.debug(f"Checkbox: {answer}", step="fill_field")
                 
-            elif field_type in ["text", "textarea"]:
-                input_elem = field.locator("input, textarea").first
-                input_elem.fill("")  # Clear first
-                input_elem.fill(str(answer))
-                logger.debug(f"Filled: {answer}", step="fill_field")
+            elif field_type in ["number", "text", "textarea"] or data_type == "INTEGER":
+                input_elem = field.locator("input:not([type='hidden']), textarea").first
+                if input_elem.count() > 0:
+                    try:
+                        input_elem.click()
+                    except:
+                        pass
+                    
+                    final_value = str(answer)
+                    if field_type == "number" or data_type == "INTEGER":
+                        final_value = self._clean_integer_answer(answer)
+                        
+                    input_elem.fill("")  # Clear first
+                    input_elem.fill(final_value)
+                    input_elem.dispatch_event("input")
+                    input_elem.dispatch_event("change")
+                    logger.debug(f"Filled field ({field_type}/{data_type}): {final_value} (raw answer: {answer})", step="fill_field")
                 
         except Exception as e:
             logger.debug(f"Error filling field: {e}", step="fill_field")

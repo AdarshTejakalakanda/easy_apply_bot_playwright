@@ -2,6 +2,7 @@ import os
 import time
 import logging
 import re
+import random
 from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
 
 from bot.application.form_filler import FormFiller
@@ -545,19 +546,25 @@ class Workflow:
                             logger.info("Fake success for dry run", job_id=jobID, step="submit", event="dry_run_success")
                             break
                         
-                        # NEW: Wait for user confirmation before final click
-                        user_decision = self.wait_for_submit_confirmation(jobID)
-                        
-                        if not user_decision:
-                            # User clicked "Skip Job" - TRACK THIS!
-                            logger.warning("⏭️ User clicked 'Skip Job' - Recording skip", job_id=jobID, step="user_action")
-                            self.store.record_user_skip(jobID, candidate_id)
-                            submitted = False
-                            break  # Skip this job
-                        
-                        # User clicked "Submit Now" - THIS IS THE SOURCE OF TRUTH!
-                        logger.info("🎯 User clicked 'Submit Now' - Application WILL be submitted", job_id=jobID, step="user_action")
-                        self.store.record_user_confirmation(jobID, candidate_id)
+                        if self.review_mode:
+                            # NEW: Wait for user confirmation before final click
+                            user_decision = self.wait_for_submit_confirmation(jobID)
+                            
+                            if not user_decision:
+                                # User clicked "Skip Job" - TRACK THIS!
+                                logger.warning("⏭️ User clicked 'Skip Job' - Recording skip", job_id=jobID, step="user_action")
+                                self.store.record_user_skip(jobID, candidate_id)
+                                submitted = False
+                                break  # Skip this job
+                            
+                            # User clicked "Submit Now" - THIS IS THE SOURCE OF TRUTH!
+                            logger.info("🎯 User clicked 'Submit Now' - Application WILL be submitted", job_id=jobID, step="user_action")
+                            self.store.record_user_confirmation(jobID, candidate_id)
+                        else:
+                            # Direct submission: add random delay
+                            delay = random.uniform(2.0, 5.0)
+                            logger.info(f"Direct submission: sleeping {delay:.2f} seconds before submitting...", job_id=jobID, step="submit")
+                            time.sleep(delay)
                         
                         # Record start time for this submission attempt
                         submit_start_time = time.time()
@@ -660,6 +667,11 @@ class Workflow:
                             logger.warning("⏭️ User skipped/cancelled submission", job_id=jobID, step="submit")
                             submitted = False
                             break
+                    else:
+                        # Direct submission: add random delay
+                        delay = random.uniform(2.0, 5.0)
+                        logger.info(f"Direct submission: sleeping {delay:.2f} seconds before submitting...", job_id=jobID, step="submit")
+                        time.sleep(delay)
                     
                     # ACTION: Click Submit
                     if self.dry_run and not self.dry_run.validate_submit():
