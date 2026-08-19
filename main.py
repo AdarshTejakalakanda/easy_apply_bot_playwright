@@ -14,9 +14,6 @@ from bot.core.proxy_manager import ProxyConfig, ProxyRotator, load_advanced_prox
 import atexit
 from dotenv import load_dotenv
 import os
-
-
-
 load_dotenv()
 
 
@@ -330,27 +327,5 @@ if __name__ == '__main__':
                     logger.info("✅ config/candidates.yaml updated with new learned answers", step="shutdown")
                 except Exception as e:
                     logger.warning(f"Failed to save learned answers to YAML: {e}", step="shutdown")
-        
-        # --- WBL API Job Activity Logging ---
-        wbl_candidate_id = selected_candidate.get('wbl_candidate_id') if selected_candidate else None
-        if wbl_candidate_id:
-            logger.info("Sending job activity log to Whitebox Learning API...", step="wbl_api")
-            notes = (
-                f"Automated bot run completed. "
-                f"Attempted: {metrics.attempted}, "
-                f"Submitted (Applied): {metrics.submitted}, "
-                f"Skipped: {metrics.skipped}, "
-                f"Failed: {metrics.failed}."
-            )
-            from bot.utils.wbl_api import send_job_activity_log
-            send_job_activity_log(
-                candidate_id=wbl_candidate_id,
-                notes=notes,
-                activity_count=metrics.submitted,
-                job_id=146
-            )
-        else:
-            logger.warning("No 'wbl_candidate_id' defined in candidate profile. Skipping WBL log.", step="wbl_api")
-            
         browser.close()
         logger.info("Bot shutdown complete", step="shutdown", event="complete")

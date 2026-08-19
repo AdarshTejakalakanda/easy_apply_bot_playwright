@@ -636,27 +636,26 @@ class Workflow:
                     if submitted:
                         break  # Exit the WHILE loop
 
-                # Check for errors
-                elif self.has_visible_errors():
-                    logger.warning("⚠️ Form contains errors or missing required fields.", job_id=jobID, step="form_error")
+                # Check for errors or unfilled required fields
+                elif self.has_visible_errors() or (hasattr(self.form_filler, 'has_unfilled_fields') and self.form_filler.has_unfilled_fields()):
+                    logger.warning("⚠️ Form contains unfilled fields or validation errors. Running auto-fill sweep...", job_id=jobID, step="form_error")
                     
-                    # Fill fields again - maybe something was missed
-                    logger.info("Re-attempting to fill fields...", job_id=jobID, step="retry_fill")
+                    # Fill fields again with force_refill=True
+                    logger.info("Re-attempting to fill and resolve empty/errored fields...", job_id=jobID, step="retry_fill")
                     if hasattr(self.form_filler, 'fill_all_fields'):
-                        self.form_filler.fill_all_fields()
+                        self.form_filler.fill_all_fields(force_refill=True)
                     
-                    time.sleep(2)
+                    time.sleep(1)
                     
-                    # AUTO-SKIP: Instead of pausing and waiting for user input, skip this job
-                    # This reduces manual work and keeps the bot running.
-                    if self.has_visible_errors():
-                        logger.warning("🛑 Form still has errors after retry. Skipping this job to keep automation running.", 
-                                   job_id=jobID, step="auto_skip")
-                        
-                        # Note: close_modal() is called in apply_to_job() so we just break here
-                        break 
+                    # If required fields are STILL empty or errored, trigger Human-in-the-Loop On-Screen Popup
+                    if self.has_visible_errors() or (hasattr(self.form_filler, 'has_unfilled_fields') and self.form_filler.has_unfilled_fields()):
+                        logger.warning("🤔 Form still has missing/errored fields - Triggering On-Screen Popup for resolution...", 
+                                       job_id=jobID, step="human_fix")
+                        if hasattr(self.form_filler, 'handle_errored_fields'):
+                            self.form_filler.handle_errored_fields()
+                        time.sleep(1)
                     
-                    continue  # Try the page again if errors were potentially fixed
+                    continue  # Continue workflow loop to submit or proceed to next page
 
                 # Check for SUBMIT button
                 elif self.is_present(get_locator("submit")) or self.is_present(get_locator("submit", use_fallback=True)):

@@ -34,9 +34,7 @@ class Search:
             if combo not in combos:
                 combos.append(combo)
                 logger.info(f"Applying to {position}: {location}", step="search_init")
-                location_param = "&location=" + location
-
-                self.applications_loop(position, location_param)
+                self.applications_loop(position, location)
             if len(combos) > 500:
                 break
 
@@ -48,7 +46,7 @@ class Search:
 
         logger.info("Looking for jobs.. Please wait..", step="job_search", event="start")
 
-        self.next_jobs_page(position, location, jobs_per_page)
+        jobs_per_page = self.next_jobs_page(position, location, jobs_per_page)
         logger.info("Looking for jobs.. Please wait..", step="job_search", event="page_loaded")
 
         while time.time() - start_time < self.MAX_SEARCH_TIME:
@@ -156,18 +154,71 @@ class Search:
                 logger.error(f"Search loop error: {e}", step="job_search", event="error", exception=e)
                 break
 
+    def ensure_easy_apply_filter(self):
+        """Ensure the Easy Apply filter pill button is visibly toggled ON in the search results UI"""
+        try:
+            time.sleep(1.5)
+            # Find Easy Apply button in top filter bar
+            filter_buttons = [
+                self.page.locator("button[aria-label*='Easy Apply filter']").first,
+                self.page.locator("button[aria-label*='Easy Apply']").first,
+                self.page.locator("#searchFilter_applyWithLinkedin").first,
+                self.page.locator("button.artdeco-pill").filter(has_text="Easy Apply").first,
+                self.page.locator("button").filter(has_text="Easy Apply").first
+            ]
+            
+            for btn in filter_buttons:
+                if btn.count() > 0 and btn.is_visible():
+                    aria_checked = btn.get_attribute("aria-checked")
+                    aria_pressed = btn.get_attribute("aria-pressed")
+                    class_attr = btn.get_attribute("class") or ""
+                    
+                    is_active = (aria_checked == "true") or (aria_pressed == "true") or ("artdeco-pill--selected" in class_attr) or ("artdeco-button--primary" in class_attr)
+                    
+                    if not is_active:
+                        logger.info("🔘 Enabling Easy Apply filter pill on LinkedIn UI...", step="job_search")
+                        btn.click()
+                        time.sleep(2.5)
+                        return True
+                    else:
+                        logger.debug("Easy Apply filter pill is active", step="job_search")
+                        return True
+        except Exception as e:
+            logger.debug(f"Could not verify Easy Apply filter pill: {e}", step="job_search")
+        return False
+
     @retry(max_attempts=3, delay=1)
     def next_jobs_page(self, position, location, jobs_per_page):
-        experience_level_str = ",".join(map(str, self.experience_level)) if self.experience_level else ""
-        experience_level_param = f"&f_E={experience_level_str}" if experience_level_str else ""
+        import urllib.parse
         
-        # Correct Easy Apply filter: f_AL=true
-        url = ("https://www.linkedin.com/jobs/search/?f_AL=true&keywords=" +
-               position + location + "&start=" + str(jobs_per_page) + experience_level_param)
+        # Build query parameters with both modern and legacy Easy Apply flags
+        params = {
+            "f_AL": "true",
+            "f_LF": "f_AL",
+            "keywords": position,
+            "start": str(jobs_per_page)
+        }
         
-        logger.info(f"Loading jobs page: {url[:100]}...", step="next_jobs_page")
+        # Experience level filter (1=Internship, 2=Entry, 3=Associate, 4=Mid-Senior, 5=Director, 6=Executive)
+        if self.experience_level:
+            params["f_E"] = ",".join(map(str, self.experience_level))
+            
+        # Remote Workplace Type filter (f_WT=2)
+        if location and str(location).strip().lower() == "remote":
+            params["f_WT"] = "2"
+        elif location:
+            params["location"] = str(location).strip()
+
+        query_str = urllib.parse.urlencode(params)
+        url = f"https://www.linkedin.com/jobs/search/?{query_str}"
+        
+        logger.info(f"Loading jobs page: {url}", step="next_jobs_page")
         self.page.goto(url, wait_until="domcontentloaded")
         self.load_page()
+        
+        # Verify and toggle Easy Apply filter pill on page if not active
+        self.ensure_easy_apply_filter()
+        
         return jobs_per_page + 25
 
     @retry(max_attempts=3, delay=1)

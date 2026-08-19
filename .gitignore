@@ -226,7 +226,5 @@ assets/*.pdf
 profiles/
 linkedin_profile/
 
-# Debug and Recordings
-videos/
-debug/
-screenshots/
+system_prompt_txt
+.vscode 

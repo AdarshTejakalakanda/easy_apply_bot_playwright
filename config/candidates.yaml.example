@@ -1,0 +1,53 @@
+# Example Candidate Configuration
+# Copy this to candidates.yaml and fill in your details
+
+candidates:
+  - id: candidate_001
+    name: "Full Name"
+    enabled: true
+    wbl_candidate_id: 12345  # Add your WBL platform candidate ID here for activity logging
+    credentials:
+      email: "your_email@example.com"
+      password: ""  # Leave empty to use .env
+      phone: "1234567890"
+    profile_path: ""
+    uploads:
+      Resume: ./assets/candidates/candidate_001/resume.pdf
+      Cover Letter: ./assets/candidates/candidate_001/cover_letter.pdf
+    search:
+      positions:
+      - "AI Engineer"
+      - "Generative AI Engineer"
+      - "RAG Engineer"
+      - "LLM Engineer"
+      - "Agentic AI Engineer"
+      - "MLOps Engineer"
+      - "AI Infrastructure Engineer"
+      - "Applied AI Scientist"
+      - "AI Solutions Architect"
+      locations:
+      - "Remote"
+      salary: 100000
+      rate: 50
+      experience_level:
+      - 2
+      - 3
+    profile_data:
+      full_name: "Full Name"
+      email: "your_email@example.com"
+      phone: "1234567890"
+      country_code: "Your Country (+1)"
+      years_experience: "3"
+      sponsorship_required: "No"
+      authorized_to_work: "Yes"
+      willing_to_relocate: "Yes"
+      current_salary: "80000"
+      expected_salary: "120000"
+      notice_period: "30 days"
+      portfolio_url: "https://github.com/yourusername"
+      linkedin_url: "https://linkedin.com/in/yourusername"
+      learned_answers: {}
+    preferences:
+      max_applications_per_run: 50
+      cooldown_seconds: 5
+      dry_run: false
