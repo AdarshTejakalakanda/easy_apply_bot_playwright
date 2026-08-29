@@ -116,89 +116,39 @@ class Workflow:
 
         self.store.write_to_file(button, jobID, self.page.title(), result)
         
-        # CRITICAL: Close any open modals before moving to next job
-        self.close_modal()
+        # CRITICAL: Only dismiss post-submission dialogs if application was successfully submitted
+        self.close_modal(is_submitted=result)
         
         return result
     
-    def close_modal(self):
-        """Close any open Easy Apply modals to prevent interference with next job"""
+    def close_modal(self, is_submitted: bool = False):
+        """
+        Close post-submission dialogs ONLY.
+        STRICT ZERO-DISCARD POLICY: Under no circumstances does this click 'Discard' or close an in-progress application.
+        """
         try:
-            # 1. Handle "Discard application?" confirmation modal (Priority)
-            # This often appears if we try to close the main modal with unsaved changes
-            if self.is_present(".artdeco-modal[role='alertdialog']") or self.is_present(".artdeco-modal-overlay"):
-                logger.debug("Potential discard/confirmation modal detected", step="cleanup")
-                
-                # Strategy A: Look for "Discard" button by text (most reliable)
-                try:
-                    discard_btn = self.page.get_by_text("Discard", exact=True).first
-                    if discard_btn.is_visible(timeout=1000):
-                        discard_btn.click()
-                        logger.info("Clicked 'Discard' text button", step="cleanup")
-                        time.sleep(1)
-                except:
-                    pass
-                
-                # Strategy B: Selectors
-                discard_selectors = [
-                    "button[data-test-dialog-primary-btn]",
-                    "button[data-control-name='discard_application_confirm_btn']"
+            # ONLY dismiss confirmation modals if the application was ALREADY successfully submitted
+            if is_submitted:
+                done_selectors = [
+                    "button:has-text('Done')",
+                    "button:has-text('Dismiss')",
+                    "button[aria-label='Dismiss']",
+                    "button.artdeco-modal__dismiss"
                 ]
-                for sel in discard_selectors:
+                for sel in done_selectors:
                     try:
                         btn = self.page.locator(sel).first
-                        if btn.is_visible(timeout=500):
+                        if btn.count() > 0 and btn.is_visible(timeout=1000):
                             btn.click()
-                            logger.info("Clicked Discard button (selector)", step="cleanup")
+                            logger.info("Dismissed post-submission confirmation modal", step="cleanup")
                             time.sleep(1)
-                            break
+                            return
                     except:
                         continue
-
-            # 2. Close main Easy Apply modal
-            modal_selectors = [
-                "button[aria-label='Dismiss']",
-                "button[data-test-modal-close-btn]",
-                ".artdeco-modal__dismiss",
-                "button.artdeco-modal__dismiss"
-            ]
-            
-            modal_closed = False
-            for selector in modal_selectors:
-                try:
-                    close_btn = self.page.locator(selector).first
-                    if close_btn.count() > 0 and close_btn.is_visible(timeout=1000):
-                        close_btn.click()
-                        logger.debug("Clicked Close (X) button", step="cleanup")
-                        time.sleep(1)
-                        modal_closed = True
-                        
-                        # 3. Discard modal might appear AFTER clicking close
-                        if self.is_present(".artdeco-modal[role='alertdialog']") or self.is_present("text=Discard"):
-                            logger.info("Discard modal appeared after closing", step="cleanup")
-                            discard_btn = self.page.get_by_text("Discard", exact=True).first
-                            if discard_btn.is_visible(timeout=2000):
-                                discard_btn.click()
-                                logger.info("Clicked Discard (after close)", step="cleanup")
-                                time.sleep(1)
-                        return
-                except:
-                    continue
-            
-            # 4. Fallback: Press Escape
-            if not modal_closed:
-                self.page.keyboard.press("Escape")
-                logger.debug("Pressed Escape to close modal", step="cleanup")
-                time.sleep(1)
-                
-                # Check for discard modal again
-                if self.is_present("text=Discard"):
-                     self.page.get_by_text("Discard", exact=True).click()
-                     logger.info("Clicked Discard after Escape", step="cleanup")
-                     time.sleep(1)
-            
+            else:
+                logger.debug("Zero-Discard Policy: Preserving open application modal.", step="cleanup")
         except Exception as e:
-            logger.debug(f"Modal cleanup attempt failed (might not be open): {e}", step="cleanup")
+            logger.debug(f"Post-submission modal cleanup: {e}", step="cleanup")
 
     def wait_for_submit_confirmation(self, jobID):
         try:
@@ -485,8 +435,7 @@ class Workflow:
             loop = 0
             form_pages = 0
             candidate_id = self.candidate_profile.get('name', 'default') if self.candidate_profile else 'default'
-            
-            while loop < 20:  # Increased loop limit for multi-page forms
+            while loop < 40:  # Multi-page resilient loop
                 time.sleep(1)
                 
                 # Upload resume
@@ -551,13 +500,11 @@ class Workflow:
                             user_decision = self.wait_for_submit_confirmation(jobID)
                             
                             if not user_decision:
-                                # User clicked "Skip Job" - TRACK THIS!
                                 logger.warning("⏭️ User clicked 'Skip Job' - Recording skip", job_id=jobID, step="user_action")
                                 self.store.record_user_skip(jobID, candidate_id)
                                 submitted = False
-                                break  # Skip this job
+                                break
                             
-                            # User clicked "Submit Now" - THIS IS THE SOURCE OF TRUTH!
                             logger.info("🎯 User clicked 'Submit Now' - Application WILL be submitted", job_id=jobID, step="user_action")
                             self.store.record_user_confirmation(jobID, candidate_id)
                         else:
@@ -568,32 +515,25 @@ class Workflow:
                         
                         # Record start time for this submission attempt
                         submit_start_time = time.time()
-                            
-                        # Click submit (wrapped in try block so manual clicks don't crash)
-                        try:
-                            # Use a short timeout because if the user manually clicked it, it might natively disappear!
-                            if element.is_visible():
-                                element.click(timeout=3000)
-                                logger.info("Clicked native Submit button via Bot", job_id=jobID, step="submit")
-                        except Exception as click_err:
-                            logger.info(f"Submit button non-clickable (likely manually clicked by user)", job_id=jobID, step="submit")
+                        
+                        # Click the native submit button
+                        element.click()
                         
                         # Wait for LinkedIn to process
                         logger.info("⏳ Waiting for LinkedIn to process...", job_id=jobID, step="submit")
                         time.sleep(4)
                         
-                        # Check if errors appeared after submit (RARE - would mean form error)
+                        # Check if errors appeared after submit
                         has_errors = self.has_visible_errors()
                         if has_errors:
-                            logger.warning("⚠️ Form errors after submit button click", job_id=jobID, step="submit")
-                            self.store.record_submission_failure(jobID, "Form errors after clicking submit", candidate_id)
-                            submitted = False
-                            break
+                            logger.warning("⚠️ Form errors after submit button click - Triggering error resolution...", job_id=jobID, step="submit")
+                            if hasattr(self.form_filler, 'handle_errored_fields'):
+                                self.form_filler.handle_errored_fields()
+                            continue
                         
-                        # Try to verify LinkedIn accepted it (for debugging/logging)
+                        # Try to verify LinkedIn accepted it
                         linkedin_verified = False
                         try:
-                            # Check if modal disappeared
                             if not self.is_present(".jobs-easy-apply-modal"):
                                 linkedin_verified = True
                             elif not self.is_present("button[aria-label='Submit application']"):
@@ -605,18 +545,13 @@ class Workflow:
                         except:
                             pass
                         
-                        # Calculate duration
                         duration = round(time.time() - start_time, 2) if start_time else None
                         
-                        # TRUST THE USER: If they clicked "Submit Now", it's submitted!
-                        # LinkedIn verification is nice-to-have but not required
                         if linkedin_verified:
                             logger.info(f"✅ LinkedIn confirmed submission! (Duration: {duration}s)", job_id=jobID, step="submit", event="success")
                         else:
-                            logger.info(f"✅ Application submitted (User approved, LinkedIn verification unclear - treating as SUCCESS)", job_id=jobID, step="submit")
+                            logger.info(f"✅ Application submitted (Duration: {duration}s)", job_id=jobID, step="submit")
                         
-                        # ALWAYS record as successful if user clicked "Submit Now"
-                        # (User has manually reviewed, bot works reliably, verification can be flaky)
                         self.store.record_submission_success(
                             job_id=jobID,
                             candidate_id=candidate_id,
@@ -626,28 +561,21 @@ class Workflow:
                         )
                         
                         submitted = True
-                        
-                        # WAIT for modal to fully close before moving on
                         time.sleep(2)
-                        break
-                        
                         break
                     
                     if submitted:
-                        break  # Exit the WHILE loop
+                        break
 
                 # Check for errors or unfilled required fields
                 elif self.has_visible_errors() or (hasattr(self.form_filler, 'has_unfilled_fields') and self.form_filler.has_unfilled_fields()):
                     logger.warning("⚠️ Form contains unfilled fields or validation errors. Running auto-fill sweep...", job_id=jobID, step="form_error")
                     
-                    # Fill fields again with force_refill=True
-                    logger.info("Re-attempting to fill and resolve empty/errored fields...", job_id=jobID, step="retry_fill")
                     if hasattr(self.form_filler, 'fill_all_fields'):
                         self.form_filler.fill_all_fields(force_refill=True)
                     
                     time.sleep(1)
                     
-                    # If required fields are STILL empty or errored, trigger Human-in-the-Loop On-Screen Popup
                     if self.has_visible_errors() or (hasattr(self.form_filler, 'has_unfilled_fields') and self.form_filler.has_unfilled_fields()):
                         logger.warning("🤔 Form still has missing/errored fields - Triggering On-Screen Popup for resolution...", 
                                        job_id=jobID, step="human_fix")
@@ -655,51 +583,7 @@ class Workflow:
                             self.form_filler.handle_errored_fields()
                         time.sleep(1)
                     
-                    continue  # Continue workflow loop to submit or proceed to next page
-
-                # Check for SUBMIT button
-                elif self.is_present(get_locator("submit")) or self.is_present(get_locator("submit", use_fallback=True)):
-                    # REVIEW STEP: If review mode is on, wait for user BEFORE clicking
-                    if self.review_mode:
-                        logger.info("⏸️ Application ready for review. Waiting for user confirmation in browser...", job_id=jobID, step="submit")
-                        if not self._wait_for_submit_confirmation(jobID):
-                            logger.warning("⏭️ User skipped/cancelled submission", job_id=jobID, step="submit")
-                            submitted = False
-                            break
-                    else:
-                        # Direct submission: add random delay
-                        delay = random.uniform(2.0, 5.0)
-                        logger.info(f"Direct submission: sleeping {delay:.2f} seconds before submitting...", job_id=jobID, step="submit")
-                        time.sleep(delay)
-                    
-                    # ACTION: Click Submit
-                    if self.dry_run and not self.dry_run.validate_submit():
-                        submitted = True
-                        logger.info("Fake success for dry run", job_id=jobID, step="submit", event="dry_run_success")
-                        break
-                    
-                    if self._click_submit_button(jobID):
-                        # CRITICAL: VERIFY SUBMISSION
-                        logger.info("⏳ Verifying submission...", job_id=jobID, step="submit")
-                        time.sleep(4)
-                        
-                        # Check for success using multiple indicators
-                        if self._verify_submission(jobID):
-                            logger.info("✅ Application Submitted Successfully!", job_id=jobID, step="submit", event="success")
-                            submitted = True
-                            if self.metrics:
-                                self.metrics.increment("submitted")
-                            time.sleep(2)
-                            break
-                        else:
-                            logger.warning("⚠️ Submission could not be verified (might still be on form)", job_id=jobID, step="submit")
-                            submitted = False
-                    else:
-                        logger.error("❌ Failed to click Submit button even after finding it", job_id=jobID, step="submit")
-                        submitted = False
-                    
-                    if submitted:
-                        break
+                    continue
 
                 # Check for next button
                 elif len(self.get_elements("next")) > 0:
@@ -707,7 +591,7 @@ class Workflow:
                     for element in elements:
                         element.wait_for(state="visible", timeout=5000)
                         element.click()
-                        form_pages += 1  # Track page progression
+                        form_pages += 1
                         logger.info(f"Clicked Next button (page {form_pages})", job_id=jobID, step="next")
                         break
 
@@ -717,12 +601,11 @@ class Workflow:
                     for element in elements:
                         element.wait_for(state="visible", timeout=5000)
                         element.click()
-                        form_pages += 1  # Track page progression
+                        form_pages += 1
                         logger.info(f"Clicked Review button (page {form_pages})", job_id=jobID, step="review")
                         break
 
-
-                # Check for follow button (alternative location)
+                # Check for follow button
                 elif len(self.get_elements("follow")) > 0:
                     elements = self.get_elements("follow")
                     for element in elements:
@@ -732,33 +615,48 @@ class Workflow:
                         break
                 
                 else:
-                    # No buttons found - might be done or stuck
+                    # No buttons found - check if complete or stuck
                     logger.warning(f"⚠️ No Next/Review/Submit buttons found (loop {loop})", job_id=jobID, step="no_action")
                     
-                    # Check if we're actually done
                     if not self.is_present(".jobs-easy-apply-modal"):
-                        logger.info("Modal closed - application likely complete", job_id=jobID, step="complete")
+                        logger.info("Modal closed - application complete", job_id=jobID, step="complete")
                         submitted = True
                         break
                     
-                    # Check if there are unfilled fields
-                    if self.is_present(".jobs-easy-apply-form-section__grouping"):
-                        logger.warning("Form fields still present but no buttons - might need manual intervention", job_id=jobID)
+                    if self.is_present(".jobs-easy-apply-form-section__grouping") or self.is_present("fieldset.fb-form-element"):
+                        logger.warning("Form fields present but progression stuck - attempting field refill...", job_id=jobID)
+                        if hasattr(self.form_filler, 'fill_all_fields'):
+                            self.form_filler.fill_all_fields(force_refill=True)
+                        if hasattr(self.form_filler, 'handle_errored_fields'):
+                            self.form_filler.handle_errored_fields()
                 
-                loop += 1  # Avoid infinite loop if stuck
+                loop += 1
                 
-                # Log progress every 5 loops
                 if loop % 5 == 0:
-                    logger.info(f"Application loop iteration {loop}/20", job_id=jobID, step="progress")
+                    logger.info(f"Application loop iteration {loop}/40", job_id=jobID, step="progress")
 
-            # Loop completed without submission
+            # Final check before concluding: If modal is still open, prompt human instead of failing/discarding
+            if not submitted and self.is_present(".jobs-easy-apply-modal"):
+                logger.warning("⚠️ Application modal still open - Zero-Discard Policy: Prompting user to complete in browser...", job_id=jobID)
+                from bot.utils.human_popup import prompt_human_with_popup
+                prompt_human_with_popup(
+                    question_text=f"Job Application ({jobID}) requires manual review/completion in the browser. Zero-Discard Guarantee is active (bot will never discard).",
+                    field_type="MANUAL_SUBMISSION",
+                    data_type="ACTION",
+                    timeout_seconds=600,
+                    suggested_answer="Completed"
+                )
+                time.sleep(3)
+                if not self.is_present(".jobs-easy-apply-modal") or self._verify_submission(jobID):
+                    submitted = True
+
             if not submitted:
-                logger.warning(f"⚠️ Loop completed ({loop} iterations) without successful submission", job_id=jobID, step="incomplete")
+                logger.warning(f"⚠️ Application loop finished for job {jobID} without confirmed submission (modal preserved)", job_id=jobID, step="incomplete")
                 if self.metrics:
                     self.metrics.increment("failed")
 
         except Exception as e:
-            logger.error(f"Cannot apply to this job: {e}", job_id=jobID, step="apply_loop", exception=e)
+            logger.error(f"Error during application process: {e}", job_id=jobID, step="apply_loop", exception=e)
             if self.metrics:
                 self.metrics.increment("failed")
 
