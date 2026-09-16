@@ -109,39 +109,32 @@ class SmartFormFiller:
         return False
 
     def _get_local_answer(self, question_text: str, field_type: str, options: list = None, data_type: str = None):
-        """Get answer exclusively from local sources (exact learned answers, semantic cache, profile keywords)"""
+        """Get answer exclusively from local sources and adapt dynamically to target live HTML data type"""
         question_lower = question_text.lower()
-        is_numeric_type = (data_type in ["INTEGER", "DECIMAL", "NUMBER"]) or (field_type == "number")
         
+        raw_ans = None
         # 0. Check exact learned answers
         if question_text in self.learned_answers:
-            cached_val = self.learned_answers[question_text]
-            if is_numeric_type:
-                return self._clean_numeric_answer(cached_val, data_type)
-            return cached_val
+            raw_ans = self.learned_answers[question_text]
         
         # 0.1 Check local semantic cache match
-        semantic_match = self._find_semantic_match(question_text, field_type, options, data_type)
-        if semantic_match:
-            if is_numeric_type:
-                return self._clean_numeric_answer(semantic_match, data_type)
-            return semantic_match
+        if raw_ans is None:
+            raw_ans = self._find_semantic_match(question_text, field_type, options, data_type)
             
         # 0.2 Check legacy Store (fallback)
-        from bot.persistence.store import Store
-        legacy_store = Store()
-        legacy_answer = legacy_store.get_answer(question_lower)
-        if legacy_answer:
-            if is_numeric_type:
-                return self._clean_numeric_answer(legacy_answer, data_type)
-            return legacy_answer
+        if raw_ans is None:
+            from bot.persistence.store import Store
+            legacy_store = Store()
+            raw_ans = legacy_store.get_answer(question_lower)
         
         # 0.3 Smart keyword matching for common profile questions
-        answer = self._match_keywords(question_lower)
-        if answer:
-            if is_numeric_type:
-                return self._clean_numeric_answer(answer, data_type)
-            return answer
+        if raw_ans is None:
+            raw_ans = self._match_keywords(question_lower)
+            
+        if raw_ans is not None:
+            # Dynamically adapt stored/cached answer to the live HTML element's format and constraints
+            adapted_ans = self._adapt_answer_to_target_field(raw_ans, field_type, data_type, options, question_text)
+            return adapted_ans
             
         return None
 
@@ -1146,6 +1139,114 @@ class SmartFormFiller:
         
         return None
     
+    def _match_best_option(self, raw_answer: str, options: list) -> str:
+        """
+        Intelligently map any raw answer (numeric '0'/'1', string 'Yes'/'No', range '2', text)
+        to the best matching option from the target dropdown/radio options list.
+        """
+        if not options or not raw_answer:
+            return raw_answer if raw_answer is not None else ""
+            
+        ans_str = str(raw_answer).strip()
+        ans_lower = ans_str.lower()
+        
+        # 1. Exact match (case-insensitive)
+        for opt in options:
+            if str(opt).strip().lower() == ans_lower:
+                return str(opt).strip()
+                
+        # 2. Boolean / Numeric Semantic Equivalence
+        if ans_lower in ["0", "no", "false", "none", "nil", "n/a", "no offer", "not applicable"]:
+            for opt in options:
+                opt_l = str(opt).strip().lower()
+                if opt_l in ["no", "0", "false", "none", "n/a", "i do not", "no, i do not", "0 years", "none of the above", "no offer", "0.0"]:
+                    return str(opt).strip()
+        elif ans_lower in ["1", "yes", "true"]:
+            for opt in options:
+                opt_l = str(opt).strip().lower()
+                if opt_l in ["yes", "1", "true", "i do", "yes, i do", "1 year", "1+ year", "1.0"]:
+                    return str(opt).strip()
+
+        # 3. Numeric Range Matching (e.g. answer is "2" or "2 years", options: ["0-1 years", "1-3 years", "3-5 years", "5+ years"])
+        num_match = re.search(r'\d+', ans_str)
+        if num_match:
+            val = int(num_match.group())
+            for opt in options:
+                opt_str = str(opt).strip()
+                # Check ranges like "1-3", "1 to 3", "1 - 3"
+                range_match = re.search(r'(\d+)\s*(?:-|to)\s*(\d+)', opt_str, re.I)
+                if range_match:
+                    low = int(range_match.group(1))
+                    high = int(range_match.group(2))
+                    if low <= val <= high:
+                        return opt_str
+                # Check "X+" or "more than X"
+                plus_match = re.search(r'(\d+)\s*\+|more than\s*(\d+)|over\s*(\d+)', opt_str, re.I)
+                if plus_match:
+                    thresh = int(next(m for m in plus_match.groups() if m is not None))
+                    if val >= thresh:
+                        return opt_str
+                # Check "less than X" or "under X"
+                under_match = re.search(r'less than\s*(\d+)|under\s*(\d+)|<\s*(\d+)', opt_str, re.I)
+                if under_match:
+                    thresh = int(next(m for m in under_match.groups() if m is not None))
+                    if val < thresh:
+                        return opt_str
+
+        # 4. Prefix / Substring matching (e.g. answer "Yes" matches "Yes, I am authorized" or "Male" matches "Male (he/him)")
+        for opt in options:
+            opt_l = str(opt).strip().lower()
+            if opt_l.startswith(ans_lower) or ans_lower.startswith(opt_l):
+                return str(opt).strip()
+                
+        # 5. Fuzzy containment
+        for opt in options:
+            opt_l = str(opt).strip().lower()
+            if ans_lower in opt_l:
+                return str(opt).strip()
+
+        return str(options[0]).strip() if options else ans_str
+
+    def _adapt_answer_to_target_field(self, raw_answer: str, field_type: str, data_type: str = None, options: list = None, question_text: str = "") -> str:
+        """
+        Universal Live Data-Type Adapter:
+        Converts ANY saved, cached, or LLM answer into the exact data type and option schema required by the live DOM.
+        """
+        if raw_answer is None:
+            return ""
+            
+        ans_str = str(raw_answer).strip()
+        data_type_upper = (data_type or field_type or "SHORT_TEXT").upper()
+        
+        # 1. Numeric / Integer Fields (Whole numbers only)
+        if data_type_upper in ["INTEGER", "NUMBER"] or field_type == "number":
+            return self._clean_numeric_answer(ans_str, data_type="INTEGER")
+            
+        # 2. Decimal Fields (e.g. "0.0", "1.5", "50.0")
+        if data_type_upper == "DECIMAL":
+            return self._clean_numeric_answer(ans_str, data_type="DECIMAL")
+            
+        # 3. Radio / Select / Dropdown Fields (Must match target available options)
+        if field_type in ["radio", "select"] or data_type_upper in ["RADIO_OPTION", "SELECT_OPTION"]:
+            if options:
+                return self._match_best_option(ans_str, options)
+            return ans_str
+            
+        # 4. Boolean Fields
+        if data_type_upper == "BOOLEAN" or field_type == "checkbox":
+            ans_l = ans_str.lower()
+            if ans_l in ["0", "no", "false", "none", "nil", "n/a", "no offer"]:
+                return "No" if field_type != "checkbox" else "false"
+            elif ans_l in ["1", "yes", "true"]:
+                return "Yes" if field_type != "checkbox" else "true"
+            return "Yes" if "yes" in ans_l else ("No" if "no" in ans_l else ans_str)
+            
+        # 5. Text / Long Text (Clean quotes/markdown wrappers if any)
+        if ans_str.startswith('"') and ans_str.endswith('"') and len(ans_str) > 1:
+            ans_str = ans_str[1:-1].strip()
+            
+        return ans_str
+
     def _clean_numeric_answer(self, answer: str, data_type: str = "INTEGER") -> str:
         """Sanitize any answer (including cached strings like 'No'/'Yes') to a clean numeric/decimal value"""
         if answer is None:
@@ -1155,10 +1256,10 @@ class SmartFormFiller:
         answer_lower = answer_str.lower()
         
         # Map boolean/yes/no answers to digits if expected field is numeric
-        if answer_lower in ["no", "none", "false", "n/a", "na", "no offer", "nil", "zero", "0"]:
-            return "0"
+        if answer_lower in ["no", "none", "false", "n/a", "na", "no offer", "nil", "zero", "0", "not applicable"]:
+            return "0" if data_type != "DECIMAL" else "0.0"
         if answer_lower in ["yes", "true", "one", "1"]:
-            return "1"
+            return "1" if data_type != "DECIMAL" else "1.0"
 
         # Map common text numbers to digits
         word_to_num = {
@@ -1166,12 +1267,13 @@ class SmartFormFiller:
             "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9", "ten": "10"
         }
         if answer_lower in word_to_num:
-            return word_to_num[answer_lower]
+            val = word_to_num[answer_lower]
+            return val if data_type != "DECIMAL" else f"{val}.0"
 
         # Extract digits or decimals (like "1.4" or "0.0")
         numbers = re.findall(r'\d+\.\d+|\d+', answer_str)
         if not numbers:
-            return "0"
+            return "0" if data_type != "DECIMAL" else "0.0"
         
         first_num = numbers[0]
         if data_type == "DECIMAL":
@@ -1187,40 +1289,53 @@ class SmartFormFiller:
         return self._clean_numeric_answer(answer, data_type="INTEGER")
 
     def _fill_field(self, field: Locator, answer: str, field_type: str, data_type: str = None):
-        """Fill the field with the answer"""
+        """Fill the field with the answer, guaranteeing schema and data type compliance"""
         try:
+            # Extract live options for select / radio fields to ensure valid option selection
+            options = self._extract_options(field, field_type) if field_type in ["select", "radio"] else []
+            final_value = self._adapt_answer_to_target_field(answer, field_type, data_type, options)
+            
             if field_type == "select":
                 select = field.locator("select").first
-                # Try by label first, then by value
                 try:
-                    select.select_option(label=answer)
+                    select.select_option(label=final_value)
                 except:
                     try:
-                        select.select_option(value=answer)
+                        select.select_option(value=final_value)
                     except:
-                        pass
-                logger.debug(f"Selected: {answer}", step="fill_field")
+                        if options:
+                            best = self._match_best_option(final_value, options)
+                            try:
+                                select.select_option(label=best)
+                            except:
+                                pass
+                logger.debug(f"Selected: {final_value}", step="fill_field")
                 
             elif field_type == "radio":
-                # Find label containing or matching the answer case-insensitively
-                label = field.locator("label").filter(has_text=re.compile(rf"^\s*{re.escape(str(answer))}\s*$", re.I)).first
+                # Match label exactly (case-insensitive)
+                label = field.locator("label").filter(has_text=re.compile(rf"^\s*{re.escape(str(final_value))}\s*$", re.I)).first
                 if label.count() > 0:
                     label.click()
-                    logger.debug(f"Radio selected via label: {answer}", step="fill_field")
+                    logger.debug(f"Radio selected via exact label: {final_value}", step="fill_field")
                 else:
-                    # Fallback to value-based input selector
-                    radio = field.locator(f"input[type='radio'][value='{answer}']").first
-                    if radio.count() > 0:
-                        radio.click()
-                        logger.debug(f"Radio selected via input value: {answer}", step="fill_field")
+                    # Match label partially / fuzzy
+                    label_sub = field.locator("label").filter(has_text=re.compile(rf"{re.escape(str(final_value))}", re.I)).first
+                    if label_sub.count() > 0:
+                        label_sub.click()
+                        logger.debug(f"Radio selected via partial label: {final_value}", step="fill_field")
+                    else:
+                        radio = field.locator(f"input[type='radio'][value='{final_value}']").first
+                        if radio.count() > 0:
+                            radio.click()
+                            logger.debug(f"Radio selected via input value: {final_value}", step="fill_field")
                     
             elif field_type == "checkbox":
                 checkbox = field.locator("input[type='checkbox']").first
-                if str(answer).lower() in ['yes', 'true', '1', 'checked']:
+                if str(final_value).lower() in ['yes', 'true', '1', 'checked']:
                     checkbox.check()
                 else:
                     checkbox.uncheck()
-                logger.debug(f"Checkbox: {answer}", step="fill_field")
+                logger.debug(f"Checkbox: {final_value}", step="fill_field")
                 
             elif field_type in ["number", "text", "textarea"] or (data_type in ["INTEGER", "DECIMAL", "NUMBER"]):
                 input_elem = field.locator("input:not([type='hidden']), textarea").first
@@ -1229,13 +1344,9 @@ class SmartFormFiller:
                         input_elem.click()
                     except:
                         pass
-                    
-                    final_value = str(answer)
-                    if field_type == "number" or (data_type in ["INTEGER", "DECIMAL", "NUMBER"]):
-                        final_value = self._clean_numeric_answer(answer, data_type or "INTEGER")
                         
                     input_elem.fill("")  # Clear first
-                    input_elem.fill(final_value)
+                    input_elem.fill(str(final_value))
                     input_elem.dispatch_event("input")
                     input_elem.dispatch_event("change")
                     logger.debug(f"Filled field ({field_type}/{data_type}): {final_value} (raw answer: {answer})", step="fill_field")
