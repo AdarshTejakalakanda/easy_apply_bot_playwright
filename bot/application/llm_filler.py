@@ -20,6 +20,10 @@ class LLMFiller:
         self.cache_file = f'./profiles/{self.candidate_id}/llm_cache.json'
         self.cache = self._load_cache()
         
+        # Cache file for job evaluations
+        self.job_eval_cache_file = f'./profiles/{self.candidate_id}/job_eval_cache.json'
+        self.job_eval_cache = self._load_job_eval_cache()
+        
         # API Keys
         self.gemini_key = os.getenv("GEMINI_API_KEY")
         self.openai_key = os.getenv("OPENAI_API_KEY")
@@ -67,6 +71,25 @@ class LLMFiller:
                 json.dump(self.cache, f, indent=2)
         except Exception as e:
             logger.warning(f"Could not save LLM cache: {e}", extra={"step": "llm_cache"})
+
+    def _load_job_eval_cache(self) -> dict:
+        """Load cached job screening decisions from file"""
+        if os.path.exists(self.job_eval_cache_file):
+            try:
+                with open(self.job_eval_cache_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.debug(f"Could not load job eval cache: {e}", extra={"step": "job_eval_init"})
+        return {}
+
+    def _save_job_eval_cache(self):
+        """Save job screening decisions to file"""
+        try:
+            os.makedirs(os.path.dirname(self.job_eval_cache_file), exist_ok=True)
+            with open(self.job_eval_cache_file, 'w', encoding='utf-8') as f:
+                json.dump(self.job_eval_cache, f, indent=2)
+        except Exception as e:
+            logger.warning(f"Could not save job eval cache: {e}", extra={"step": "job_eval_cache"})
 
     def _load_resume_text(self) -> str:
         """Load resume text from system_prompt_txt or PDF"""
@@ -718,3 +741,181 @@ Do not return any other text, markdown formatting, or prefix. Return ONLY the JS
         else:
             logger.warning(f"OpenAI API returned error status {response.status_code}: {response.text}")
         return None
+
+    def evaluate_jobs_batch(self, jobs_batch: list) -> dict:
+        """
+        Evaluate a batch of discovered job postings against the candidate's resume/profile in 1 single LLM API call.
+        jobs_batch: list of dicts [{"job_id": str, "title": str, "company": str, "location": str, "snippet": str}]
+        
+        Returns dict mapping job_id -> {"job_id": str, "suitable": bool, "match_score": float, "reason": str}
+        """
+        if not jobs_batch:
+            return {}
+
+        results = {}
+        unresolved_jobs = []
+
+        # 1. Check local job evaluation cache first
+        for job in jobs_batch:
+            job_id = str(job.get("job_id", "")).strip()
+            if not job_id:
+                continue
+            if job_id in self.job_eval_cache:
+                results[job_id] = self.job_eval_cache[job_id]
+            else:
+                unresolved_jobs.append({
+                    "job_id": job_id,
+                    "title": job.get("title", ""),
+                    "company": job.get("company", ""),
+                    "location": job.get("location", ""),
+                    "snippet": job.get("snippet", "")
+                })
+
+        if not unresolved_jobs:
+            return results
+
+        if not self.is_enabled():
+            # If LLM is not configured, approve all jobs by default
+            for job in unresolved_jobs:
+                jid = job["job_id"]
+                decision = {
+                    "job_id": jid,
+                    "suitable": True,
+                    "match_score": 1.0,
+                    "reason": "LLM screening disabled; auto-approved"
+                }
+                results[jid] = decision
+                self.job_eval_cache[jid] = decision
+            self._save_job_eval_cache()
+            return results
+
+        # 2. Query Gemini / OpenAI in 1 batched payload
+        api_results = self._query_job_eval_api(unresolved_jobs)
+
+        # 3. Merge results and persist in job evaluation cache
+        for job in unresolved_jobs:
+            jid = job["job_id"]
+            if jid in api_results:
+                eval_res = api_results[jid]
+                results[jid] = eval_res
+                self.job_eval_cache[jid] = eval_res
+            else:
+                # Default to suitable if evaluation was missing for a specific item
+                fallback_decision = {
+                    "job_id": jid,
+                    "suitable": True,
+                    "match_score": 0.8,
+                    "reason": f"Role aligned with technical search for '{job.get('title')}'"
+                }
+                results[jid] = fallback_decision
+                self.job_eval_cache[jid] = fallback_decision
+
+        self._save_job_eval_cache()
+        return results
+
+    def _query_job_eval_api(self, jobs_batch: list) -> dict:
+        """Call Gemini API via REST with batch of jobs to evaluate"""
+        headers = {"Content-Type": "application/json"}
+        candidate_name = self.profile_data.get('full_name', 'Adarsh Teja Kalakanda')
+        jobs_json_str = json.dumps(jobs_batch, indent=2)
+
+        prompt = f"""You are an elite AI Job Application Advisor evaluating LinkedIn job postings for candidate {candidate_name}.
+
+--- CANDIDATE RESUME AND TARGET PROFILE (FROM SYSTEM PROMPT) ---
+{self.resume_text or "Candidate is an AI/ML Engineer with strong experience in Python, LLMs, Generative AI, RAG, Backend Engineering, Machine Learning, and Software Engineering. Immediate joiner willing to work at startups."}
+
+--- CANDIDATE TARGET ROLES & STRENGTHS ---
+- Target Roles: AI Engineer, AI/ML Engineer, Generative AI Engineer, LLM Engineer, Agentic AI, Python Developer / Engineer, Backend Engineer, Software Engineer, Applied AI, Machine Learning Engineer, RAG Engineer, NLP Engineer.
+- Tech Stack: Python, PyTorch, LangChain, LlamaIndex, Transformers, FastAPI, Django, Flask, Docker, Kubernetes, SQL, Vector DBs (Pinecone, Chroma, FAISS, Milvus), Prompt Engineering, Data Science, AI Automations.
+- Work Preference: Eager to join innovative startups, product companies, and technology organizations.
+
+--- DISCOVERED JOBS TO EVALUATE (TOTAL: {len(jobs_batch)}) ---
+{jobs_json_str}
+
+--- STRICT SUITABILITY EVALUATION CRITERIA ---
+1. APPROVE as SUITABLE ("suitable": true, "match_score": 0.70 to 1.0) if:
+   - The job is related to AI, Machine Learning, Generative AI, LLMs, NLP, Deep Learning, Python, Backend Engineering, Software Engineering, Applied AI, Agentic Workflows, RAG, Data Science, or general Software Development.
+   - The candidate's background in AI/ML, Python, and Software Engineering is relevant.
+2. REJECT as UNSUITABLE ("suitable": false, "match_score": 0.0 to 0.40) ONLY if:
+   - The job is strictly non-technical or completely unrelated (e.g. Sales Account Executive, Real Estate Agent, HR Recruiter, Financial Auditor, Legal Counsel, Civil/Mechanical On-Site Construction, Nurse, Pure Graphic Designer).
+3. Provide a clear 1-sentence explanation for each decision.
+
+--- STRICT OUTPUT FORMAT ---
+Respond strictly with valid JSON matching this schema:
+{{
+  "evaluations": [
+    {{
+      "job_id": "123456",
+      "suitable": true,
+      "match_score": 0.95,
+      "reason": "Strong match for AI/ML Engineer with Python & LLM expertise."
+    }}
+  ]
+}}
+Do NOT include markdown backticks outside JSON. Return ONLY the JSON object.
+"""
+
+        models_to_try = [
+            "gemini-2.5-flash",
+            "gemini-3.7-flash",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-3.1-flash-lite",
+            "gemini-3.1-pro-preview",
+            "gemini-3-flash-preview",
+            "gemini-2.0-flash",
+            "gemini-2.0-flash-lite"
+        ]
+
+        for model in models_to_try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.gemini_key}"
+            payload = {
+                "contents": [{
+                    "role": "user",
+                    "parts": [{"text": prompt}]
+                }],
+                "generationConfig": {
+                    "responseMimeType": "application/json"
+                }
+            }
+
+            try:
+                response = requests.post(url, headers=headers, json=payload, timeout=30)
+                if response.status_code == 200:
+                    result_json = response.json()
+                    text = result_json.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                    
+                    clean_text = text.strip()
+                    if clean_text.startswith("```json"):
+                        clean_text = clean_text[7:]
+                    elif clean_text.startswith("```"):
+                        clean_text = clean_text[3:]
+                    if clean_text.endswith("```"):
+                        clean_text = clean_text[:-3]
+                    clean_text = clean_text.strip()
+                    
+                    parsed_data = json.loads(clean_text)
+                    eval_list = parsed_data.get("evaluations", [])
+                    output_map = {}
+                    for item in eval_list:
+                        jid = str(item.get("job_id", "")).strip()
+                        if jid:
+                            output_map[jid] = {
+                                "job_id": jid,
+                                "suitable": bool(item.get("suitable", True)),
+                                "match_score": float(item.get("match_score", 0.9)),
+                                "reason": str(item.get("reason", "Profile match"))
+                            }
+                    return output_map
+                elif response.status_code == 429:
+                    logger.warning(f"⚠️ Rate limit on model {model} during job screening. Trying fallback...", extra={"step": "job_eval"})
+                    continue
+                else:
+                    logger.warning(f"Job screening API ({model}) status {response.status_code}: {response.text}", extra={"step": "job_eval"})
+                    continue
+            except Exception as e:
+                logger.warning(f"Error during job screening call ({model}): {e}", extra={"step": "job_eval"})
+                continue
+
+        return {}

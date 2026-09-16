@@ -3,17 +3,17 @@
 #project-bot-easy-apply-python-playwright\bot\utils\selectors.py
 LOCATORS = {
     "next": {
-        "primary": "button[aria-label='Continue to next step'], button[aria-label*='next step'], button[aria-label*='Continue']",
+        "primary": "button[aria-label='Continue to next step'], button[aria-label*='next step'], button[aria-label*='Continue'], footer button.artdeco-button--primary:has-text('Next'), footer button.artdeco-button--primary:has-text('Continue')",
         "fallback": "button.artdeco-button--primary:has-text('Next'), button.artdeco-button--primary:has-text('Continue'), //button[contains(., 'Next') or contains(., 'Continue')]"
     },
     
     "review": {
-        "primary": "button[aria-label='Review your application'], button[aria-label*='Review']",
+        "primary": "button[aria-label='Review your application'], button[aria-label*='Review'], footer button.artdeco-button--primary:has-text('Review')",
         "fallback": "button.artdeco-button--primary:has-text('Review'), //button[contains(., 'Review')]"
     },
     
     "submit": {
-        "primary": "button[aria-label='Submit application'], button[aria-label*='Submit application'], button[aria-label*='Submit your application']",
+        "primary": "button[aria-label='Submit application'], button[aria-label*='Submit application'], button[aria-label*='Submit your application'], footer button.artdeco-button--primary:has-text('Submit')",
         "fallback": "button.artdeco-button--primary:has-text('Submit'), button[type='submit']:has-text('Submit'), //button[contains(., 'Submit')]"
     },
     "error": {

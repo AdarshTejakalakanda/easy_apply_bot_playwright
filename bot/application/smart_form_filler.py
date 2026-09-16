@@ -96,6 +96,9 @@ class SmartFormFiller:
         try:
             fields = self._get_form_fields()
             for field in fields:
+                field_type = self._detect_field_type(field)
+                if field_type == "file":
+                    continue
                 val = self._extract_filled_value(field)
                 if not val or not str(val).strip():
                     is_req = self._is_required_field(field)
@@ -182,6 +185,10 @@ class SmartFormFiller:
                     
                     is_required = self._is_required_field(field)
                     field_type = self._detect_field_type(field)
+                    if field_type == "file":
+                        logger.debug(f"Field {i+1}: File/Resume upload field. Handled by workflow.", step="fill_fields")
+                        continue
+                        
                     html_spec = self._inspect_html_element_spec(field, field_type, question_text)
                     data_type = html_spec.get("expected_data_type") or self._extract_html_data_type(field, field_type, question_text)
                     options = html_spec.get("options") or (self._extract_options(field, field_type) if field_type in ["select", "radio"] else [])
@@ -474,6 +481,10 @@ class SmartFormFiller:
     def _detect_field_type(self, field: Locator) -> str:
         """Detect the type of form field"""
         try:
+            # Check for file upload / document upload redesign cards
+            if field.locator("input[type='file']").count() > 0 or field.locator(".jobs-document-upload-redesign-card__container").count() > 0:
+                return "file"
+            
             # Check for select dropdown
             if field.locator("select").count() > 0:
                 return "select"
@@ -495,7 +506,7 @@ class SmartFormFiller:
                 return "number"
             
             # Check for text/number/url inputs (any other visible input)
-            if field.locator("input:not([type='hidden'])").count() > 0:
+            if field.locator("input:not([type='hidden']):not([type='file'])").count() > 0:
                 return "text"
                 
         except:
@@ -510,6 +521,21 @@ class SmartFormFiller:
                 // 0. Check for visible inline error messages to detect exact page validation rules
                 const errorEl = el.querySelector('.artdeco-inline-feedback--error, [data-test-form-element-error], .fb-form-element--error');
                 const errorText = errorEl ? errorEl.innerText.trim() : '';
+
+                // Check for file input / resume cards
+                const fileInput = el.querySelector('input[type="file"]');
+                if (fileInput || el.querySelector('.jobs-document-upload-redesign-card__container')) {
+                    return {
+                        tag: '<input type="file">',
+                        html_type: 'file',
+                        expected_data_type: 'FILE',
+                        description: 'Document / Resume Upload',
+                        options: [],
+                        placeholder: '',
+                        error_text: errorText,
+                        details: 'File upload (handled by bot resume manager)'
+                    };
+                }
 
                 // 1. Select Dropdown
                 const select = el.querySelector('select');
@@ -1095,6 +1121,12 @@ class SmartFormFiller:
     def _extract_filled_value(self, field: Locator) -> str:
         """Extract the value that was filled in the field"""
         try:
+            # 0. Check for File / Document upload
+            if field.locator("input[type='file']").count() > 0 or field.locator(".jobs-document-upload-redesign-card__container").count() > 0:
+                if field.locator(".jobs-document-upload-redesign-card__container--selected, [aria-label='Selected']").count() > 0:
+                    return "Resume Selected"
+                return "File Field"
+
             # 1. Try Text Input/Email/Tel
             input_elem = field.locator("input[type='text'], input[type='email'], input[type='tel'], input[type='number']").first
             if input_elem.count() > 0:
@@ -1288,9 +1320,101 @@ class SmartFormFiller:
         """Sanitize LLM output to a clean whole number (integer)"""
         return self._clean_numeric_answer(answer, data_type="INTEGER")
 
-    def _fill_field(self, field: Locator, answer: str, field_type: str, data_type: str = None):
-        """Fill the field with the answer, guaranteeing schema and data type compliance"""
+    def _handle_typeahead_input(self, input_elem: Locator, value: str) -> bool:
+        """
+        Handle LinkedIn typeahead/autocomplete inputs (e.g. City/Location, Company, School):
+        Types the value, waits for the floating dropdown list, and clicks the best matching suggestion.
+        """
         try:
+            val_str = str(value).strip()
+            if not val_str:
+                return False
+
+            input_elem.click()
+            time.sleep(0.2)
+            input_elem.fill("")
+            time.sleep(0.2)
+
+            # Type value to trigger LinkedIn's async auto-suggest
+            type_text = val_str.split(',')[0].strip() if ',' in val_str else val_str
+            try:
+                input_elem.press_sequentially(type_text, delay=40)
+            except:
+                input_elem.fill(type_text)
+                input_elem.dispatch_event("input")
+                
+            time.sleep(1.0)  # Wait for dropdown to populate
+
+            # Typeahead suggestion selectors across LinkedIn Easy Apply forms
+            suggestion_selectors = [
+                ".basic-typeahead__selectable-list li",
+                "div[role='listbox'] div[role='option']",
+                "div[role='listbox'] li",
+                "ul[role='listbox'] li",
+                ".basic-typeahead__results-list li",
+                ".artdeco-typeahead__results-list li",
+                "div[data-test-typeahead-result]",
+                ".search-typeahead-v2__hit",
+                ".basic-typeahead__selectable",
+                ".type-ahead-results li"
+            ]
+
+            # Try locating the active dropdown list in page or parent
+            for sel in suggestion_selectors:
+                try:
+                    suggestions = self.page.locator(sel).all()
+                    if suggestions:
+                        # 1. Try to find best match containing val_str or city name
+                        best_match = None
+                        for s in suggestions:
+                            try:
+                                text = s.text_content(timeout=500).strip()
+                                if text:
+                                    if val_str.lower() in text.lower() or text.lower() in val_str.lower():
+                                        best_match = s
+                                        break
+                                    if type_text.lower() in text.lower():
+                                        best_match = s
+                            except:
+                                continue
+
+                        # If no exact match, select the first suggestion
+                        target_to_click = best_match or suggestions[0]
+                        target_text = ""
+                        try:
+                            target_text = target_to_click.text_content(timeout=500).strip()
+                        except:
+                            pass
+                            
+                        target_to_click.click(timeout=2000, force=True)
+                        logger.info(f"✅ Clicked typeahead dropdown suggestion: '{target_text}' for input '{val_str}'", step="fill_typeahead")
+                        time.sleep(0.5)
+                        return True
+                except Exception:
+                    continue
+
+            # Keyboard navigation fallback: ArrowDown + Enter
+            try:
+                input_elem.press("ArrowDown")
+                time.sleep(0.3)
+                input_elem.press("Enter")
+                time.sleep(0.3)
+                logger.info(f"Selected typeahead suggestion via ArrowDown+Enter for: '{val_str}'", step="fill_typeahead")
+                return True
+            except:
+                pass
+
+        except Exception as e:
+            logger.debug(f"Typeahead handler note: {e}", step="fill_typeahead")
+            
+        return False
+
+    def _fill_field(self, field: Locator, answer: str, field_type: str, data_type: str = None):
+        """Fill the field with the answer, guaranteeing schema, typeahead, and data type compliance"""
+        try:
+            if field_type == "file":
+                return
+                
             # Extract live options for select / radio fields to ensure valid option selection
             options = self._extract_options(field, field_type) if field_type in ["select", "radio"] else []
             final_value = self._adapt_answer_to_target_field(answer, field_type, data_type, options)
@@ -1345,11 +1469,40 @@ class SmartFormFiller:
                     except:
                         pass
                         
+                    final_value_str = str(final_value)
+                    
+                    # 1. Check if this is a typeahead / combobox auto-suggest field (e.g. City/Location, Company, School)
+                    is_typeahead = False
+                    try:
+                        role = input_elem.get_attribute("role") or ""
+                        aria_auto = input_elem.get_attribute("aria-autocomplete") or ""
+                        aria_ctrl = input_elem.get_attribute("aria-controls") or ""
+                        cls = input_elem.get_attribute("class") or ""
+                        parent_cls = field.get_attribute("class") or ""
+                        q_text = self._extract_question(field).lower()
+                        
+                        if role == "combobox" or aria_auto in ["list", "both"] or aria_ctrl or "typeahead" in cls or "typeahead" in parent_cls or any(k in q_text for k in ["city", "location", "school", "university", "company", "postal", "zip"]):
+                            is_typeahead = True
+                    except:
+                        pass
+                        
+                    if is_typeahead:
+                        handled = self._handle_typeahead_input(input_elem, final_value_str)
+                        if handled:
+                            return
+                    
+                    # 2. Standard Text/Number Input Fill
                     input_elem.fill("")  # Clear first
-                    input_elem.fill(str(final_value))
+                    input_elem.fill(final_value_str)
                     input_elem.dispatch_event("input")
                     input_elem.dispatch_event("change")
-                    logger.debug(f"Filled field ({field_type}/{data_type}): {final_value} (raw answer: {answer})", step="fill_field")
+                    
+                    # 3. Check if a floating typeahead dropdown popped up after standard fill
+                    time.sleep(0.5)
+                    if self.page.locator(".basic-typeahead__selectable-list, div[role='listbox'] div[role='option'], .artdeco-typeahead__results-list").count() > 0:
+                        self._handle_typeahead_input(input_elem, final_value_str)
+                        
+                    logger.debug(f"Filled field ({field_type}/{data_type}): {final_value_str} (raw answer: {answer})", step="fill_field")
                 
         except Exception as e:
             logger.debug(f"Error filling field: {e}", step="fill_field")

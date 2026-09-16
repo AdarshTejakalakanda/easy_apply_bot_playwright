@@ -94,60 +94,99 @@ class Search:
                             links = self.page.locator(fallback_selector).all()
                             logger.info(f"Fallback found {len(links)} job cards", step="job_search", event="cards_found_fallback")
                     
+                    # 1. Collect all valid unapplied jobs from the current page to screen with LLM in one batch
+                    candidate_cards = []
                     for i, link in enumerate(links):
                         try:
-                            # Check if element is visible before processing
                             if not link.is_visible():
                                 continue
-                            
                             job_id = JobIdentity.extract_job_id(link)
-                            if job_id and not scroll_tracker.is_processed(job_id):
-                                try:
-                                    link_text = link.text_content(timeout=3000)
-                                except:
-                                    link_text = ""
-                                
-                                if 'Applied' not in link_text:
-                                    if link_text not in self.blacklist:
-                                        logger.info(f"Found new job: {job_id}", step="job_search", event="found_job")
-                                        
-                                        # CRITICAL: Click the job card to show preview panel
-                                        # Don't click the title link, click the card container
-                                        try:
-                                            # Click on the job card div, NOT the title link
-                                            # This shows the preview panel with Easy Apply button
-                                            link.click(timeout=5000, force=False)
-                                            logger.debug(f"Clicked job card {job_id} to show preview", step="job_search")
-                                            time.sleep(1.5)  # Wait for preview panel to load
-                                        except Exception as click_err:
-                                            logger.warning(f"Could not click job card: {click_err}", step="job_search")
-                                        
-                                        self.workflow.apply_to_job(job_id, self.phone_number)
-                                        scroll_tracker.add_job(job_id)
-                                    else:
-                                        logger.info(f"Skipping blacklisted job: {job_id}", step="job_search", event="blacklisted")
-                                        scroll_tracker.add_job(job_id)  # Blacklisted but processed
-                                else:
-                                    logger.debug(f"Already applied to job: {job_id}", step="job_search", event="already_applied")
-                                    scroll_tracker.add_job(job_id)  # Already applied
-                            elif job_id:
-                                logger.debug(f"Job {job_id} already processed", step="job_search", event="duplicate")
+                            if not job_id or scroll_tracker.is_processed(job_id):
+                                continue
+                            try:
+                                link_text = link.text_content(timeout=2000) or ""
+                            except:
+                                link_text = ""
+                            if 'Applied' in link_text or any(b.lower() in link_text.lower() for b in self.blacklist):
+                                scroll_tracker.add_job(job_id)
+                                continue
+                            
+                            lines = [l.strip() for l in link_text.split('\n') if l.strip()]
+                            job_title = lines[0] if len(lines) > 0 else position
+                            company = lines[1] if len(lines) > 1 else "Unknown"
+                            
+                            candidate_cards.append({
+                                "job_id": job_id,
+                                "title": job_title,
+                                "company": company,
+                                "location": location,
+                                "snippet": link_text,
+                                "link_elem": link
+                            })
                         except Exception as e:
-                            logger.warning(f"Error processing job card {i}: {e}", step="job_search", event="card_error")
                             continue
+
+                    # 2. Batch Screen with LLM if candidates found
+                    evaluations = {}
+                    llm_filler = getattr(getattr(self.workflow, 'form_filler', None), 'llm_filler', None)
+                    if candidate_cards and llm_filler and llm_filler.is_enabled():
+                        logger.info(f"🧠 Screening {len(candidate_cards)} discovered jobs with LLM against your resume...", step="job_screening")
+                        evaluations = llm_filler.evaluate_jobs_batch(candidate_cards)
+
+                    # 3. Iterate and apply only to suitable jobs
+                    for card in candidate_cards:
+                        job_id = card["job_id"]
+                        job_title = card["title"]
+                        company = card["company"]
+                        link = card["link_elem"]
+                        
+                        eval_decision = evaluations.get(job_id, {"suitable": True, "match_score": 1.0, "reason": "Approved"})
+                        is_suitable = eval_decision.get("suitable", True)
+                        match_score = eval_decision.get("match_score", 1.0)
+                        reason = eval_decision.get("reason", "")
+                        
+                        if not is_suitable:
+                            logger.info(f"⏭️ LLM Filtered Out job {job_id}: '{job_title}' at '{company}' (Score: {match_score:.2f}) - Reason: {reason}", step="job_screening")
+                            scroll_tracker.add_job(job_id)
+                            continue
+                            
+                        logger.info(f"🎯 LLM Approved job {job_id}: '{job_title}' at '{company}' (Score: {match_score:.2f}) - {reason}", step="job_screening")
+                        
+                        # Check if previous modal is still open before interacting with background elements
+                        if self.is_present(".jobs-easy-apply-modal"):
+                            if self.workflow._verify_submission():
+                                self.workflow.close_modal(is_submitted=True)
+                            else:
+                                logger.info(f"Open modal detected - resuming application for job {job_id}", step="job_search")
+                                self.workflow.apply_to_job(job_id, self.phone_number)
+                                scroll_tracker.add_job(job_id)
+                                continue
+
+                        # Resilient click on job card container to open preview and Easy Apply button
+                        try:
+                            try:
+                                link.scroll_into_view_if_needed(timeout=1000)
+                            except Exception:
+                                pass
+                            try:
+                                link.click(timeout=3000)
+                            except Exception:
+                                try:
+                                    link.click(timeout=3000, force=True)
+                                except Exception:
+                                    link.evaluate("el => el.click()")
+                            time.sleep(1.5)
+                        except Exception as click_err:
+                            logger.warning(f"Could not click job card: {click_err}", step="job_search")
+                            
+                        self.workflow.apply_to_job(job_id, self.phone_number)
+                        scroll_tracker.add_job(job_id)
                     
                     if scroll_tracker.should_stop():
                         jobs_per_page = self.next_jobs_page(position, location, jobs_per_page)
 
                 else:
                     logger.warning(f"No job cards found with selector: {links_selector}", step="job_search", event="no_cards")
-                    # Debug: print what elements are on the page
-                    try:
-                        all_divs = self.page.locator("div").count()
-                        all_lis = self.page.locator("li").count()
-                        logger.debug(f"Page has {all_divs} divs and {all_lis} list items", step="job_search")
-                    except:
-                        pass
                     jobs_per_page = self.next_jobs_page(position, location, jobs_per_page)
 
             except Exception as e:
@@ -191,10 +230,11 @@ class Search:
     def next_jobs_page(self, position, location, jobs_per_page):
         import urllib.parse
         
-        # Build query parameters with both modern and legacy Easy Apply flags
+        # Build query parameters with Easy Apply flags + Past Week (r604800) time filter
         params = {
             "f_AL": "true",
             "f_LF": "f_AL",
+            "f_TPR": "r604800",
             "keywords": position,
             "start": str(jobs_per_page)
         }

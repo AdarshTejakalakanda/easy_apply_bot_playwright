@@ -38,6 +38,45 @@ class Workflow:
         self.human = HumanInteraction(self.page)
         self.metrics = metrics
 
+    def _safe_click(self, element, timeout_ms: int = 3000) -> bool:
+        """
+        Resilient multi-tier click to bypass pointer event interception, overlays, and animations:
+        1. Scroll into view
+        2. Normal Playwright click with short timeout
+        3. Force Playwright click
+        4. Direct JavaScript DOM click (el.click())
+        """
+        if not element:
+            return False
+        try:
+            try:
+                element.scroll_into_view_if_needed(timeout=1000)
+            except Exception:
+                pass
+                
+            try:
+                element.click(timeout=timeout_ms)
+                return True
+            except Exception:
+                pass
+                
+            try:
+                element.click(timeout=timeout_ms, force=True)
+                return True
+            except Exception:
+                pass
+                
+            try:
+                element.evaluate("el => el.click()")
+                return True
+            except Exception:
+                pass
+                
+            return False
+        except Exception as e:
+            logger.debug(f"Safe click error: {e}")
+            return False
+
     def apply_to_job(self, jobID, phone_number):
         if self.metrics:
             self.metrics.increment("attempted")
@@ -46,6 +85,17 @@ class Workflow:
             if self.metrics:
                 self.metrics.increment("skipped")
             return False
+
+        # If an application modal is already open on screen, check if finished or continue filling it
+        if self.is_present(".jobs-easy-apply-modal"):
+            if self._verify_submission(jobID):
+                self.close_modal(is_submitted=True)
+            else:
+                logger.info(f"Existing application modal open - continuing application for job {jobID}", job_id=jobID, step="apply")
+                start_time = time.time()
+                result = self.send_resume(jobID, start_time)
+                self.close_modal(is_submitted=result)
+                return result
 
         self.get_job_page(jobID)
         time.sleep(1)
@@ -86,7 +136,7 @@ class Workflow:
                     # Record start time for duration tracking
                     start_time = time.time()
                     
-                    button.click()
+                    self._safe_click(button)
                     logger.debug("Waiting for modal to open...", job_id=jobID, step="apply")
                     time.sleep(2)  # Wait for modal to fully open
                     
@@ -139,7 +189,7 @@ class Workflow:
                     try:
                         btn = self.page.locator(sel).first
                         if btn.count() > 0 and btn.is_visible(timeout=1000):
-                            btn.click()
+                            self._safe_click(btn)
                             logger.info("Dismissed post-submission confirmation modal", step="cleanup")
                             time.sleep(1)
                             return
@@ -438,7 +488,21 @@ class Workflow:
             while loop < 40:  # Multi-page resilient loop
                 time.sleep(1)
                 
-                # Upload resume
+                # Handle Document Upload Redesign Cards
+                try:
+                    resume_cards = self.page.locator(".jobs-document-upload-redesign-card__container").all()
+                    if resume_cards:
+                        selected_cards = self.page.locator(".jobs-document-upload-redesign-card__container--selected, .jobs-document-upload-redesign-card__container[aria-label='Selected']").all()
+                        if not selected_cards:
+                            logger.info("Selecting first available resume card from redesign UI...", job_id=jobID, step="upload_resume")
+                            self._safe_click(resume_cards[0])
+                            time.sleep(1)
+                        else:
+                            logger.debug("Resume card already selected in redesign UI", job_id=jobID, step="upload_resume")
+                except Exception as e:
+                    logger.debug(f"Document upload redesign check: {e}")
+
+                # Upload resume file if file input present
                 resume_selector = get_locator("upload_resume")
                 if self.is_present(resume_selector):
                     try:
@@ -468,7 +532,7 @@ class Workflow:
                 if follow_elements:
                     for element in follow_elements:
                         try:
-                            element.click()
+                            self._safe_click(element)
                             logger.info("Clicked 'Follow Company' checkbox", job_id=jobID, step="follow")
                         except:
                             pass
@@ -516,8 +580,8 @@ class Workflow:
                         # Record start time for this submission attempt
                         submit_start_time = time.time()
                         
-                        # Click the native submit button
-                        element.click()
+                        # Click the native submit button using resilient safe click
+                        self._safe_click(element)
                         
                         # Wait for LinkedIn to process
                         logger.info("⏳ Waiting for LinkedIn to process...", job_id=jobID, step="submit")
@@ -590,7 +654,7 @@ class Workflow:
                     elements = self.get_elements("next")
                     for element in elements:
                         element.wait_for(state="visible", timeout=5000)
-                        element.click()
+                        self._safe_click(element)
                         form_pages += 1
                         logger.info(f"Clicked Next button (page {form_pages})", job_id=jobID, step="next")
                         break
@@ -600,7 +664,7 @@ class Workflow:
                     elements = self.get_elements("review")
                     for element in elements:
                         element.wait_for(state="visible", timeout=5000)
-                        element.click()
+                        self._safe_click(element)
                         form_pages += 1
                         logger.info(f"Clicked Review button (page {form_pages})", job_id=jobID, step="review")
                         break
@@ -610,7 +674,7 @@ class Workflow:
                     elements = self.get_elements("follow")
                     for element in elements:
                         element.wait_for(state="visible", timeout=5000)
-                        element.click()
+                        self._safe_click(element)
                         logger.info("Clicked Follow button", job_id=jobID, step="follow")
                         break
                 
@@ -668,7 +732,7 @@ class Workflow:
 
         return submitted
 
-    def _click_submit_button(self, jobID) -> bool:
+    def _click_submit_button(self, jobID=None) -> bool:
         """Robustly find and click the LinkedIn 'Submit application' button"""
         try:
             selectors = [
@@ -681,24 +745,24 @@ class Workflow:
 
             for selector in selectors:
                 try:
-                    btn = self.page.locator(selector).visible().first
-                    if btn.count() > 0:
-                        btn.click()
-                        logger.info(f"Clicked Submit button using selector: {selector}", job_id=jobID)
-                        if self.metrics:
-                            self.metrics.increment("submit_clicks")
-                        return True
+                    btn = self.page.locator(selector).first
+                    if btn.count() > 0 and btn.is_visible():
+                        if self._safe_click(btn):
+                            logger.info(f"Clicked Submit button using selector: {selector}", job_id=jobID)
+                            if self.metrics:
+                                self.metrics.increment("submit_clicks")
+                            return True
                 except:
                     continue
 
             try:
-                btn = self.page.get_by_role("button", name=re.compile("Submit application|Submit", re.I)).visible().first
-                if btn.count() > 0:
-                    btn.click()
-                    logger.info("Clicked Submit button using Role API", job_id=jobID)
-                    if self.metrics:
-                        self.metrics.increment("submit_clicks")
-                    return True
+                btn = self.page.get_by_role("button", name=re.compile("Submit application|Submit", re.I)).first
+                if btn.count() > 0 and btn.is_visible():
+                    if self._safe_click(btn):
+                        logger.info("Clicked Submit button using Role API", job_id=jobID)
+                        if self.metrics:
+                            self.metrics.increment("submit_clicks")
+                        return True
             except:
                 pass
 
@@ -707,16 +771,16 @@ class Workflow:
             logger.error(f"Error clicking submit: {e}", job_id=jobID)
             return False
 
-    def _verify_submission(self, jobID) -> bool:
+    def _verify_submission(self, jobID=None) -> bool:
         """Thoroughly check if the application was actually sent"""
         try:
-            success_confirmations = ["sent", "successfully", "done", "submitted", "received", "thanks"]
+            success_confirmations = ["sent", "successfully", "done", "submitted", "received", "thanks", "application sent", "your application was sent"]
             if self.is_present(".artdeco-modal__content"):
                 content = self.page.locator(".artdeco-modal__content").first.text_content(timeout=3000).lower()
                 if any(word in content for word in success_confirmations):
                     return True
 
-            if self.is_present("h2:has-text('Application sent')") or self.is_present("h2:has-text('successfully')"):
+            if self.is_present("h2:has-text('Application sent')") or self.is_present("h2:has-text('successfully')") or self.is_present("h3:has-text('Application sent')"):
                 return True
 
             if not self.is_present(".jobs-easy-apply-modal") and not self.is_present(get_locator("error")):
