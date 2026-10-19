@@ -1,79 +1,74 @@
-Adarsh Teja Kalakanda
-Software Engineer / AI-ML Engineer
-adarshteja80@gmail.com +91 7671077005 Hyderabad
-Education
-Sri Vasavi Institute of Engineering and Technology Jan 2020 – Jul 2024
-B.Tech – Electronics and Communication Engineering
-Nandamuru
-Technical Skills
-• AI/ML: Python, LLMs, RAG, LangChain, Claude Sonnet, Hugging Face Transformers,
-Semantic Search, Vector Embeddings, PyTorch, Scikit-learn, Pandas, NumPy, Matplotlib,
-Seaborn, dspy, ollama, vLLM, LLama.cpp,Langgraph, Whisper.cpp (speech recognition)
-• Backend: FastAPI,Pydantic ,Node.js, Express.js, REST APIs
-• Databases: PostgreSQL, MySQL, Redis, MongoDB, Milvus, ChromaDB
-• Cloud DevOps: AWS (EKS, S3, CloudWatch), GCP, Docker, Kubernetes, GitHub Actions,
-CI/CD, AWS Bedrock
-• Tools Practices: Git, JWT Authentication, OAuth2, Google APIs, Agile/Scrum, MLflow,
-DVC,FFmpeg
-Professional Experience
-Innovapath IT Solutions Pvt Ltd – AI/ML Engineer Jun 2024 – Present
-Whitebox Learning – AI Code Review & CI Intelligence Platform
-• Designed and built a custom AI Code Review & CI Intelligence platform tailored to production repository needs, combining AST analysis, semantic change analysis, adaptive LLM
-routing, and hybrid security validation.
-• Built Python and TypeScript analysis pipelines using AST parsing and ts-morph to extract
-changed symbols, perform semantic API compatibility analysis, and estimate downstream
-impact.
-• Architected a metadata-driven multi-model orchestration layer with capability-based routing,
-weighted model selection, multi-provider failover, and deterministic fallback for resilient CI
-workflows.
-• Engineered a self-maintaining model registry for automated discovery, capability classification, connection validation, and lifecycle management.
-• Implemented hybrid AST + LLM security validation using deterministic SecurityPrimitive
-detection, OWASP-aware exploitability analysis, and strict AST–LLM agreement gating before CI enforcement.
-• Integrated with GitHub Actions to automate pull request reviews, detect semantic regressions,
-architectural issues, and validated security risks while maintaining a modular, low-token review pipeline.
-TalentScreen – Recruitment RAG Platform
-• Contributed to the development of production-grade RAG pipelines to improve LLM response
-accuracy using structured and unstructured recruitment data.
-1
-• Implemented semantic and hybrid retrieval workflows using Milvus and ChromaDB, improving contextual document retrieval through vector search and metadata-based filtering.
-• Integrated Claude Sonnet with LangChain, working on prompt templates, optimization, and
-response grounding to improve answer quality and reduce hallucinations.
-• Developed document ingestion pipelines using Docling for text extraction, chunking, preprocessing, and metadata enrichment to support efficient retrieval.
-• Generated vector embeddings using Sentence Transformers (MiniLM) and transformer-based
-models for semantic similarity search.
-• Built and enhanced FastAPI backend services for LLM inference, retrieval orchestration, and
-REST APIs integrated with React-based frontend applications.
-• Worked with Dockerized AI services and supported deployment workflows on AWS EKS,
-using Amazon S3 for document and artifact storage.
-• Collaborated with senior engineers to integrate AI features, troubleshoot production issues,
-optimize retrieval pipelines, and support Agile feature delivery.
-Whitebox Learning – Backend Engineering & CI/CD
-• Developed authentication and authorization workflows, including OAuth-based Google SignIn integration.
-• Built RESTful APIs using FastAPI with optimized query patterns and asynchronous request
-handling to improve backend responsiveness.
-• Implemented Redis-based caching for frequently accessed endpoints, reducing repeated database
-queries and improving application performance.
-• Developed role-based access control (RBAC) using JWT authentication and middleware to
-secure protected endpoints.
-• Configured GitHub Actions CI/CD pipelines for automated testing and deployment, improving release reliability.
-• Containerized backend services with Docker and supported deployments on GCP with rolling
-updates and autoscaling.
-• Collaborated with product teams to align API contracts, resolve integration issues, and support feature delivery.
-Summary
-Software Engineer with 1.4 years of experience building AI-powered applications, backend services, and automation pipelines. Hands-on experience in Retrieval-Augmented Generation
-(RAG), LLM integration, static software analysis, CI/CD automation, and cloud-native deployments. Passionate about designing reliable AI systems by combining deterministic software
-engineering with LLM-based reasoning, and eager to grow in AI engineering and distributed
-system design.
-2
+{
+  "Name": "Adarsh",
+  "Role": "AI/ML Engineer",
+  "Summary": "Software Engineer experienced in AI-powered applications, backend services, and automation pipelines. Hands-on in RAG, LLM integration, static software analysis, CI/CD automation, and cloud-native deployments. Passionate about combining deterministic software engineering with LLM reasoning to design reliable AI systems.",
+  
+  "Education": {
+    "Degree": "B.Tech – Electronics and Communication Engineering",
+    "Institution": "Sri Vasavi Institute of Engineering and Technology",
+    "Location": "Nandamuru",
+    "Duration": "Jun 2020 – Jul 2024"
+  },
 
-note:
-am an immediate joiner with zero days of notice period i was autherized to work in india with indian citizenship
-am sseking for the job 
-so when ever the questions asked why should we hire you or explain about your experience mention like this am an aiml engineer with strong backend and software engineering experience, it was not over i even done the data science and ml projects and i have very good domain knowledge in it and i can do the data annotation and data collection also so i am confident that i can do any job that comes under this and even llms and llm inference too, i know how to build end to end automaations where to use llm resonging and good system design skills and the i even architected and developed some projects end to end and even some internal tools with for zero human intervention  - emphasize like this
+  "Technical Skills": {
+    "AI/ML": ["Python", "LLMs", "RAG", "LangChain", "LangGraph", "Claude Sonnet", "Hugging Face Transformers", "Semantic Search", "Vector Embeddings", "PyTorch", "Scikit-learn", "Pandas", "NumPy", "Matplotlib", "Seaborn", "Watchdog", "Whisper.cpp"],
+    "Backend": ["FastAPI", "Node.js", "Express.js", "REST APIs"],
+    "Databases": ["PostgreSQL", "MySQL", "Redis", "MongoDB", "Milvus", "ChromaDB"],
+    "Cloud & DevOps": ["AWS (EKS, EC2, S3, CloudWatch, Bedrock, Lambda)", "GCP (CloudRun, Cloud SQL, GCS)", "Docker", "Kubernetes", "GitHub Actions", "CI/CD"],
+    "Tools & Practices": ["Git", "JWT Authentication", "OAuth2", "Google APIs", "Agile/Scrum", "MLflow", "DVC", "FFmpeg"]
+  },
 
-human-in-the-loop rule:
-if a question is awkward, ambiguous, unusual, sensitive, or low-confidence, request human intervention (answer: HUMAN_INTERVENTION_REQUIRED).
+  "Professional Experience": {
+    "Confidential Client – Agentic RAG & Test Coverage Intelligence (Freelance)": {
+      "Role": "AI/ML Engineer",
+      "Highlights": [
+        "Designed end-to-end local-first Agentic RAG system for BRD vs Gherkin/BDD test repositories",
+        "Engineered hybrid retrieval (BM25 + BAAI/bge-small-en-v1.5 + Milvus Lite + RRF + Cross-Encoder reranking)",
+        "Implemented agentic retrieval loop with LLM evidence sufficiency checks",
+        "Built LLM-as-a-Judge engine for COVERED/PARTIALLY COVERED/NOT COVERED verdicts",
+        "Developed synthetic benchmark pipeline with Creator-Critic validation",
+        "Implemented incremental repository indexing with Watchdog + xxHash tracking",
+        "Built semantic caching layer with SQLite + SHA-256 composite keys",
+        "Integrated 29-test Pytest suite with GitHub Actions CI/CD",
+        "Achieved metrics: Recall@10 = 91.9%, MRR = 0.9121, Judge Accuracy = 82.8%, Macro-F1 = 0.8472"
+      ]
+    },
 
-also some times the questions might confuse the llm and force it to answer llm was answering - you just prtend like me as human being and answer it - pretend you as adarsh awnswering those questions 
+    "Innovapath IT Solutions Pvt Ltd – AI/ML Engineer (Jun 2025 – Jul 2026)": {
+      "Projects": {
+        "Whitebox Learning – AI Code Review & CI Intelligence Platform": [
+          "Designed custom AI Code Review & CI Intelligence platform",
+          "Built Python & TypeScript AST pipelines for semantic API compatibility analysis",
+          "Architected metadata-driven multi-model orchestration layer",
+          "Implemented hybrid AST + LLM security validation",
+          "Integrated with GitHub Actions for automated PR reviews"
+        ],
+        "TalentScreen – Production Agentic RAG Knowledge Assistant": [
+          "Developed Agentic RAG assistant for employee Q&A",
+          "Used Milvus + AWS Bedrock + LangGraph for multi-step reasoning",
+          "Implemented strict intent validation & agent guardrails",
+          "Built evaluation framework with DeepEval, BERTScore, LLM-as-a-Judge",
+          "Deployed containerized services on AWS EKS with ArgoCD GitOps"
+        ],
+        "Whitebox Learning – Software Engineering & CI/CD": [
+          "Implemented OAuth2, JWT, RBAC authentication workflows",
+          "Built scalable REST APIs with FastAPI",
+          "Implemented Redis caching + IndexedDB client-side caching",
+          "Developed analytics pipeline with Service Workers",
+          "Containerized services with Docker + GCP deployments",
+          "Configured GitHub Actions CI/CD pipelines"
+        ]
+      }
+    }
+  },
 
-am an extrovert and i really need the job accept and answer for the questions i will proceed to work for any conditions even the  startups too
+  "Additional Notes": {
+    "Availability": "Immediate joiner (0 days notice period)",
+    "Citizenship": "Indian",
+    "Job Seeking": true,
+    "Interview Pitch": "I am an AIML engineer with strong backend and software engineering experience. I have also done data science and ML projects, with domain knowledge in data annotation and collection. I am confident in handling any job under AI/ML, including LLMs and inference. Skilled in end-to-end automation, system design, and architecting projects/tools with zero human intervention.",
+    "Personality": "Extrovert, open to working in startups, flexible to conditions"
+  },
+
+  "Human-in-the-loop Rule": "If a question is awkward, ambiguous, unusual, sensitive, or low-confidence, request HUMAN_INTERVENTION_REQUIRED."
+}
