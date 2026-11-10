@@ -1036,7 +1036,12 @@ class SmartFormFiller:
             # Check question keywords if tag was plain text input
             if dom_info.get("expected_data_type") == "SHORT_TEXT" and question_text:
                 q_lower = question_text.lower()
-                numeric_keywords = ["years", "how many", "count", "number of", "experience in years", "rating", "scale of", "salary", "compensation", "notice period", "offer", "hold any offer", "current offer", "expected ctc", "current ctc"]
+                numeric_keywords = [
+                    "years", "how many", "count", "number of", "experience in years", 
+                    "rating", "scale of", "salary", "compensation", "notice period", 
+                    "offer", "hold any offer", "current offer", "expected ctc", "current ctc",
+                    "how soon", "when can you join", "how soon can you", "joining time", "days"
+                ]
                 if any(kw in q_lower for kw in numeric_keywords):
                     dom_info["expected_data_type"] = "INTEGER"
                     dom_info["description"] = "Whole Number (Integer Digits Only)"
@@ -1500,6 +1505,23 @@ class SmartFormFiller:
 
                     # Step 1: Try Local Cache & Profile Match first
                     resolved_answer = self._get_local_answer(question_text, field_type, options, data_type)
+                    
+                    # Anti-Loop Guard: If the field already has an active error and the local answer is the EXACT failing value in DOM:
+                    if has_error and val and resolved_answer and str(resolved_answer).strip().lower() == str(val).strip().lower():
+                        logger.warning(f"⚠️ Local cache answer '{resolved_answer}' for '{question_text}' is currently failing validation in DOM. Evicting bad cache entry and adapting...", step="handle_error")
+                        if question_text in self.learned_answers:
+                            del self.learned_answers[question_text]
+                            self._save_learned_answers()
+                        
+                        # If the failing value was non-numeric text, try converting to numeric:
+                        numeric_alt = self._clean_numeric_answer(str(val), data_type="INTEGER")
+                        if numeric_alt and numeric_alt != str(val):
+                            logger.info(f"🔄 Retrying errored field '{question_text}' with numeric adaptation: '{numeric_alt}'", step="handle_error")
+                            resolved_answer = numeric_alt
+                            data_type = "INTEGER"
+                        else:
+                            resolved_answer = None
+
                     if resolved_answer is not None:
                         logger.info(f"✅ Errored/empty field '{question_text}' resolved via profile/cache -> '{resolved_answer}'", step="handle_error")
                         self._fill_field(field, resolved_answer, field_type, data_type)
@@ -1842,11 +1864,21 @@ class SmartFormFiller:
         answer_str = str(answer).strip()
         answer_lower = answer_str.lower()
         
-        # Map boolean/yes/no answers to digits if expected field is numeric
-        if answer_lower in ["no", "none", "false", "n/a", "na", "no offer", "nil", "zero", "0", "not applicable"]:
+        # Map boolean/yes/no and immediate joining answers to digits if expected field is numeric
+        if answer_lower in ["no", "none", "false", "n/a", "na", "no offer", "nil", "zero", "0", "not applicable", "immediately", "immediate", "immediate joiner", "asap", "now", "0 days"]:
             return "0" if data_type != "DECIMAL" else "0.0"
         if answer_lower in ["yes", "true", "one", "1"]:
             return "1" if data_type != "DECIMAL" else "1.0"
+
+        # Map common time periods to number of days
+        time_to_days = {
+            "1 month": "30", "2 months": "60", "3 months": "90",
+            "1 week": "7", "2 weeks": "14", "3 weeks": "21", "4 weeks": "28",
+            "15 days": "15", "30 days": "30", "60 days": "60", "90 days": "90"
+        }
+        if answer_lower in time_to_days:
+            val = time_to_days[answer_lower]
+            return val if data_type != "DECIMAL" else f"{val}.0"
 
         # Map common text numbers to digits
         word_to_num = {
