@@ -18,7 +18,7 @@ LOCATORS = {
     },
     "error": {
         "primary": ".artdeco-inline-feedback--error, [aria-invalid='true'], p:has-text('Invalid input'), p:has-text('Please enter a valid'), p:has-text('Please enter a whole number'), [data-testid='text-input-helper-text']:has-text('Invalid'), [data-testid='text-input-helper-text']:has-text('valid'), .jobs-easy-apply-form-element--error",
-        "fallback": "[data-test-form-element-error-message], .fb-form-element--error, span:has-text('Invalid input'), p:has-text('Required')"
+        "fallback": "[data-test-form-element-error-message], .fb-form-element--error, span:has-text('Invalid input'), .artdeco-inline-feedback--error"
     },
     
     "upload_resume": {

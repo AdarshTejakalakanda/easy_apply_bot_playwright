@@ -167,6 +167,34 @@ class SmartFormFiller:
             logger.debug(f"Error querying form fields: {e}", step="fill_fields")
             return []
 
+    def _is_placeholder_or_empty(self, val: str) -> bool:
+        """Return True if val is None, empty, whitespace, or a common dropdown/field placeholder prompt"""
+        if val is None:
+            return True
+        v = str(val).strip().lower()
+        if not v:
+            return True
+        
+        # Remove trailing/leading punctuation
+        v_clean = re.sub(r'^[^\w]+|[^\w]+$', '', v)
+        if not v_clean:
+            return True
+
+        placeholder_exact = {
+            "select", "select an option", "select option", "please select", 
+            "please select an option", "choose", "choose an option", "choose one", 
+            "select one", "select a value", "select an answer", "select qualification", 
+            "select your qualification", "select country", "select state", "select location",
+            "none", "null", "undefined", "n/a", "na", "--", "-- select --", "--select--"
+        }
+        if v in placeholder_exact or v_clean in placeholder_exact:
+            return True
+            
+        if v.startswith("select an option") or v.startswith("please select") or v.startswith("choose an option"):
+            return True
+            
+        return False
+
     def _field_has_error(self, field: Locator) -> bool:
         """Check if field has visible error states across classic and modern LinkedIn UIs"""
         try:
@@ -183,12 +211,22 @@ class SmartFormFiller:
                 "p:has-text('Invalid input')",
                 "p:has-text('Please enter a valid')",
                 "p:has-text('Please enter a whole number')",
+                "p:has-text('Enter a whole number')",
+                "p:has-text('Please enter a decimal number')",
                 "p:has-text('Please make a selection')",
+                "p:has-text('Make a selection')",
+                "p:has-text('Please select')",
+                "p:has-text('Select an option')",
                 "p:has-text('Please enter between')",
                 "[data-testid='text-input-helper-text']:has-text('Invalid')",
                 "[data-testid='text-input-helper-text']:has-text('valid')",
                 "[data-testid='text-input-helper-text']:has-text('required')",
-                "span:has-text('Invalid input')"
+                "[data-testid='text-input-helper-text']:has-text('select')",
+                "[data-testid='text-input-helper-text']:has-text('whole number')",
+                "[data-testid='text-input-helper-text']:has-text('enter')",
+                "span:has-text('Invalid input')",
+                ".artdeco-inline-feedback--error",
+                "[role='alert']"
             ]
             for sel in error_text_selectors:
                 try:
@@ -296,8 +334,8 @@ class SmartFormFiller:
                     has_error = self._field_has_error(field)
                     
                     existing_value = self._extract_filled_value(field)
-                    if existing_value and str(existing_value).strip() and not force_refill and not has_error:
-                        logger.info(f"Field {i+1}: '{question_text}' already has value. Skipping.", step="process_field")
+                    if existing_value and str(existing_value).strip() and not self._is_placeholder_or_empty(existing_value) and not force_refill and not has_error:
+                        logger.info(f"Field {i+1}: '{question_text}' already has value '{existing_value}'. Skipping.", step="process_field")
                         continue
                     
                     is_required = self._is_required_field(field)
@@ -486,8 +524,8 @@ class SmartFormFiller:
 
             # 1. Skip if already filled, UNLESS field has an active error
             existing_value = self._extract_filled_value(field)
-            if existing_value and str(existing_value).strip() and not has_error:
-                logger.info(f"Field {field_num}: '{question_text}' already has value. Skipping.", step="process_field")
+            if existing_value and str(existing_value).strip() and not self._is_placeholder_or_empty(existing_value) and not has_error:
+                logger.info(f"Field {field_num}: '{question_text}' already has value '{existing_value}'. Skipping.", step="process_field")
                 return "skipped_filled"
 
             # Check if required
@@ -1318,6 +1356,10 @@ class SmartFormFiller:
             if 'current' in question_lower:
                 return self.profile_data.get('current_salary')
             return self.profile_data.get('expected_salary')
+
+        # 6.1 Degree / Qualification / Education level
+        if any(k in question_lower for k in ['qualification', 'highest education', 'degree', 'level of education', 'highest level']):
+            return self.profile_data.get('degree') or self.profile_data.get('education') or self.learned_answers.get('Highest Qualification Held') or "Bachelor's"
         
         # 7. Broad "Yes/No" Patterns
         # REMOVED: No more blind "Yes" defaults to avoid "wrong answers".
@@ -1345,7 +1387,7 @@ class SmartFormFiller:
             # Absolute guard: Never ask human if field is already filled and has no error
             existing = self._extract_filled_value(field)
             has_error = self._field_has_error(field)
-            if existing and str(existing).strip() and not has_error:
+            if existing and str(existing).strip() and not self._is_placeholder_or_empty(existing) and not has_error:
                 logger.info(f"Field '{question_text}' already has valid value '{existing}' and no errors. Skipping human popup.", step="human_input")
                 return str(existing).strip()
 
@@ -1405,26 +1447,28 @@ class SmartFormFiller:
             return suggested_answer if suggested_answer else None
 
     def handle_errored_fields(self):
-        """Resolve any fields that currently have validation errors or are left unfilled via Local Cache -> LLM -> Human fallback"""
+        """Resolve any fields that currently have validation errors or are left unfilled via Local Cache -> LLM Batch -> Human fallback"""
         try:
             fields = self._get_form_fields()
+            unresolved_errored = []
+            
             for i, field in enumerate(fields):
                 field_type = self._detect_field_type(field)
                 if field_type in ["file", "education_section", "work_experience_section", "button_container"] or field.locator("input, select, textarea").count() == 0:
                     continue
                 val = self._extract_filled_value(field)
                 has_error = self._field_has_error(field)
-
                 is_req = self._is_required_field(field)
 
-                # If field has error or is an empty required field
-                if has_error or (is_req and not val):
+                # If field has error or is an empty/placeholder required field
+                if has_error or (is_req and (val is None or self._is_placeholder_or_empty(val))):
                     question_text = self._extract_question(field)
                     if not question_text:
                         continue
                     field_type = self._detect_field_type(field)
                     data_type = self._extract_html_data_type(field, field_type, question_text)
                     options = self._extract_options(field, field_type) if field_type in ["select", "radio"] else None
+                    html_spec = self._inspect_html_element_spec(field, field_type, question_text)
                     
                     try:
                         field.scroll_into_view_if_needed(timeout=1000)
@@ -1434,53 +1478,83 @@ class SmartFormFiller:
                     # Step 1: Try Local Cache & Profile Match first
                     resolved_answer = self._get_local_answer(question_text, field_type, options, data_type)
                     if resolved_answer is not None:
-                        logger.info(f"✅ Errored field '{question_text}' resolved via profile/cache -> '{resolved_answer}'", step="handle_error")
+                        logger.info(f"✅ Errored/empty field '{question_text}' resolved via profile/cache -> '{resolved_answer}'", step="handle_error")
                         self._fill_field(field, resolved_answer, field_type, data_type)
-                        time.sleep(0.5)
+                        time.sleep(0.3)
                         continue
 
-                    # Step 2: Try LLM reasoning with candidate resume & profile
-                    if self.llm_filler and self.llm_filler.is_enabled():
-                        logger.info(f"🤖 Querying LLM to resolve errored/unfilled field: '{question_text}'", step="handle_error")
-                        llm_decision = self.llm_filler.answer_field(question_text, field_type, options, data_type)
-                        if llm_decision:
-                            ans = llm_decision.get("answer")
-                            conf = llm_decision.get("confidence", 0.0)
-                            if ans and str(ans).strip().upper() != "HUMAN_INTERVENTION_REQUIRED" and conf >= 0.70:
-                                if data_type in ["INTEGER", "DECIMAL", "NUMBER"] or field_type == "number":
-                                    ans = self._clean_numeric_answer(ans, data_type)
-                                logger.info(f"✅ LLM answered errored field '{question_text}': '{ans}' (conf {conf:.2f})", step="handle_error")
-                                self.learned_answers[question_text] = ans
-                                self._save_learned_answers()
-                                self._fill_field(field, ans, field_type, data_type)
-                                time.sleep(0.5)
-                                continue
+                    # Queue for batch LLM resolution
+                    unresolved_errored.append({
+                        "id": i,
+                        "field_obj": field,
+                        "question": question_text,
+                        "field_type": field_type,
+                        "data_type": data_type,
+                        "options": options,
+                        "details": html_spec.get("details", ""),
+                        "is_required": is_req,
+                        "html_spec": html_spec
+                    })
 
-                    # Step 3: Check if already resolved before triggering human popup
-                    val_now = self._extract_filled_value(field)
-                    err_now = self._field_has_error(field)
-                    if val_now and str(val_now).strip() and not err_now:
-                        logger.info(f"Field '{question_text}' already resolved with '{val_now}'. Skipping human popup.", step="handle_error")
-                        continue
-
-                    # Human popup ONLY if local cache AND LLM cannot resolve
-                    logger.warning(f"🚨 Missing/Errored field: '{question_text}' - Triggering On-Screen Popup for resolution...", step="handle_error")
+            # Step 2: Batch LLM call for all unresolved errored fields
+            remaining_for_human = []
+            if unresolved_errored:
+                if self.llm_filler and self.llm_filler.is_enabled():
+                    logger.info(f"🚀 Batching {len(unresolved_errored)} unresolved errored/empty field(s) to LLM with system_prompt_txt in 1 call...", step="handle_error")
+                    batch_results = self.llm_filler.get_batch_answers(unresolved_errored)
                     
-                    suggested_answer = None
-                    if self.llm_filler and hasattr(self.llm_filler, 'get_last_tentative_answer'):
-                        suggested_answer = self.llm_filler.get_last_tentative_answer()
+                    for item in unresolved_errored:
+                        item_id = item["id"]
+                        q_text = item["question"]
+                        f_type = item["field_type"]
+                        d_type = item["data_type"]
+                        field = item["field_obj"]
+                        
+                        llm_res = batch_results.get(item_id, {})
+                        ans = llm_res.get("answer")
+                        conf = llm_res.get("confidence", 0.0)
+                        
+                        if ans and str(ans).strip().upper() != "HUMAN_INTERVENTION_REQUIRED" and conf >= 0.70:
+                            if d_type in ["INTEGER", "DECIMAL", "NUMBER"] or f_type == "number":
+                                ans = self._clean_numeric_answer(ans, d_type)
+                            logger.info(f"✅ LLM answered errored field '{q_text}' [{d_type}] (conf {conf:.2f}): '{ans}'", step="handle_error")
+                            self.learned_answers[q_text] = ans
+                            self._save_learned_answers()
+                            self._fill_field(field, ans, f_type, d_type)
+                            time.sleep(0.3)
+                        else:
+                            remaining_for_human.append((item, ans))
+                else:
+                    remaining_for_human = [(item, None) for item in unresolved_errored]
 
-                    answer = self._ask_human(
-                        question_text=question_text,
-                        field=field,
-                        is_required=True,
-                        suggested_answer=suggested_answer,
-                        field_type=field_type,
-                        options=options,
-                        data_type=data_type
-                    )
-                    if answer is not None:
-                        self._fill_field(field, answer, field_type, data_type)
+            # Step 3: Human popup ONLY if local cache AND LLM cannot resolve
+            for item, tentative_ans in remaining_for_human:
+                field = item["field_obj"]
+                q_text = item["question"]
+                f_type = item["field_type"]
+                d_type = item["data_type"]
+                opts = item["options"]
+                is_req = item["is_required"]
+                
+                # Check if already resolved
+                val_now = self._extract_filled_value(field)
+                err_now = self._field_has_error(field)
+                if val_now and not self._is_placeholder_or_empty(val_now) and not err_now:
+                    logger.info(f"Field '{q_text}' already resolved with '{val_now}'. Skipping human popup.", step="handle_error")
+                    continue
+
+                logger.warning(f"🚨 Missing/Errored field: '{q_text}' - Triggering On-Screen Popup for resolution...", step="handle_error")
+                ans = self._ask_human(
+                    question_text=q_text,
+                    field=field,
+                    is_required=is_req,
+                    suggested_answer=tentative_ans if tentative_ans and tentative_ans.upper() != "HUMAN_INTERVENTION_REQUIRED" else None,
+                    field_type=f_type,
+                    options=opts,
+                    data_type=d_type
+                )
+                if ans is not None:
+                    self._fill_field(field, ans, f_type, d_type)
         except Exception as e:
             logger.error(f"Error handling errored fields: {e}", step="handle_error")
 
@@ -1517,35 +1591,48 @@ class SmartFormFiller:
             # 1. Try any text/email/tel/number input
             input_elem = field.locator("input:not([type='hidden']):not([type='file']):not([type='checkbox']):not([type='radio'])").first
             if input_elem.count() > 0:
+                val = None
                 try:
                     val = input_elem.input_value()
-                    if val and str(val).strip():
-                        return str(val).strip()
                 except:
                     pass
-                try:
-                    val = input_elem.get_attribute("value")
-                    if val and str(val).strip():
-                        return str(val).strip()
-                except:
-                    pass
+                if not val or not str(val).strip():
+                    try:
+                        val = input_elem.get_attribute("value")
+                    except:
+                        pass
+                if val and str(val).strip():
+                    val_str = str(val).strip()
+                    if not self._is_placeholder_or_empty(val_str):
+                        return val_str
+                return None
             
             # 2. Try Textarea
             textarea = field.locator("textarea").first
             if textarea.count() > 0:
                 val = textarea.input_value()
-                if val and val.strip(): return val.strip()
+                if val and val.strip() and not self._is_placeholder_or_empty(val.strip()):
+                    return val.strip()
+                return None
             
             # 3. Try Select Dropdown
             select = field.locator("select").first
             if select.count() > 0:
-                val = select.input_value()
-                if val and val.strip() and val != "Select an option": 
-                    # Try to get the text label instead of internal value
+                selected_text = ""
+                try:
+                    selected_text = self.page.evaluate("el => el.options && el.selectedIndex >= 0 ? el.options[el.selectedIndex].text : ''", select.element_handle())
+                except:
+                    pass
+                if not selected_text:
                     try:
-                        return self.page.evaluate("el => el.options[el.selectedIndex].text", select.element_handle())
+                        selected_text = select.input_value() or ""
                     except:
-                        return val
+                        pass
+                
+                selected_text = (selected_text or "").strip()
+                if selected_text and not self._is_placeholder_or_empty(selected_text):
+                    return selected_text
+                return None
             
             # 4. Try Radio (get checked label)
             checked_radio = field.locator("input[type='radio']:checked, [role='radio'][aria-checked='true']").first
