@@ -482,11 +482,7 @@ class SmartFormFiller:
                 return None
             
             # Check if field has visible error states
-            has_error = False
-            try:
-                has_error = field.locator(".artdeco-inline-feedback--error, [aria-invalid='true'], .fb-form-element--error, [data-test-form-element-error]").count() > 0
-            except:
-                pass
+            has_error = self._field_has_error(field)
 
             # 1. Skip if already filled, UNLESS field has an active error
             existing_value = self._extract_filled_value(field)
@@ -578,10 +574,14 @@ class SmartFormFiller:
 
             # 1. Check aria-label attribute on inputs/selects/textareas inside this field (cleanest accessible label)
             for ctrl in field.locator("input:not([type='hidden']), select, textarea").all():
+                c_type = (ctrl.get_attribute("type") or "").lower()
                 al = ctrl.get_attribute("aria-label")
                 if al:
                     al_clean = re.sub(r'\s*Required\s*', '', al, flags=re.IGNORECASE).strip()
                     al_clean = re.sub(r'\s*\*+\s*$', '', al_clean).strip()
+                    # Skip option-level radio/checkbox aria-labels like "Yes" or "No"
+                    if c_type in ["radio", "checkbox"] and al_clean.lower() in ["yes", "no", "true", "false", "agree", "disagree"]:
+                        continue
                     if len(al_clean) > 2:
                         return al_clean[:200]
 
@@ -781,7 +781,7 @@ class SmartFormFiller:
                 return "select"
             
             # Check for radio buttons
-            if field.locator("input[type='radio']").count() > 0:
+            if field.locator("input[type='radio'], [role='radio'], [role='radiogroup']").count() > 0:
                 return "radio"
             
             # Check for checkbox
@@ -1011,11 +1011,41 @@ class SmartFormFiller:
                     if text and "select" not in text.lower() and len(text) > 0:
                         options.append(text)
             elif field_type == "radio":
-                labels = field.locator("label").all()
-                for label in labels:
-                    text = label.inner_text().strip()
-                    if text:
-                        options.append(text)
+                # 1. Extract from radio inputs and associated label/wrapper elements
+                radios = field.locator("input[type='radio'], [role='radio']").all()
+                for r in radios:
+                    opt_text = ""
+                    r_id = r.get_attribute("id")
+                    if r_id:
+                        lbl = field.locator(f"label[for='{r_id}']").first
+                        if lbl.count() > 0:
+                            opt_text = lbl.inner_text().strip()
+                    if not opt_text:
+                        parent_lbl = r.locator("xpath=ancestor::label[1]").first
+                        if parent_lbl.count() > 0:
+                            opt_text = parent_lbl.inner_text().strip()
+                    if not opt_text:
+                        parent_wrap = r.locator("xpath=..").first
+                        if parent_wrap.count() > 0:
+                            opt_text = parent_wrap.inner_text().strip()
+                    if not opt_text:
+                        opt_text = r.get_attribute("aria-label") or r.get_attribute("value") or ""
+                    
+                    if opt_text:
+                        # Clean asterisks or required tags
+                        opt_text = re.sub(r'\s*Required\s*', '', opt_text, flags=re.IGNORECASE).strip()
+                        opt_text = re.sub(r'\s*\*+\s*$', '', opt_text).strip()
+                        if opt_text and opt_text not in options:
+                            options.append(opt_text)
+
+                # 2. Fallback to labels
+                if not options:
+                    labels = field.locator("label, [role='radio']").all()
+                    for label in labels:
+                        text = label.inner_text().strip()
+                        text = re.sub(r'\s*Required\s*', '', text, flags=re.IGNORECASE).strip()
+                        if text and text not in options:
+                            options.append(text)
         except Exception as e:
             logger.debug(f"Failed to extract options: {e}", step="extract_options")
         return options
@@ -1312,6 +1342,13 @@ class SmartFormFiller:
         - Includes a 10-minute live countdown timer before auto-submitting the LLM fallback
         """
         try:
+            # Absolute guard: Never ask human if field is already filled and has no error
+            existing = self._extract_filled_value(field)
+            has_error = self._field_has_error(field)
+            if existing and str(existing).strip() and not has_error:
+                logger.info(f"Field '{question_text}' already has valid value '{existing}' and no errors. Skipping human popup.", step="human_input")
+                return str(existing).strip()
+
             # Highlight field in browser for visual reference
             highlight_color = 'rgba(255, 0, 0, 0.4)' if is_required else 'rgba(255, 165, 0, 0.4)'
             try:
@@ -1419,7 +1456,14 @@ class SmartFormFiller:
                                 time.sleep(0.5)
                                 continue
 
-                    # Step 3: Human popup ONLY if local cache AND LLM cannot resolve
+                    # Step 3: Check if already resolved before triggering human popup
+                    val_now = self._extract_filled_value(field)
+                    err_now = self._field_has_error(field)
+                    if val_now and str(val_now).strip() and not err_now:
+                        logger.info(f"Field '{question_text}' already resolved with '{val_now}'. Skipping human popup.", step="handle_error")
+                        continue
+
+                    # Human popup ONLY if local cache AND LLM cannot resolve
                     logger.warning(f"🚨 Missing/Errored field: '{question_text}' - Triggering On-Screen Popup for resolution...", step="handle_error")
                     
                     suggested_answer = None
@@ -1504,15 +1548,49 @@ class SmartFormFiller:
                         return val
             
             # 4. Try Radio (get checked label)
-            checked_radio = field.locator("input[type='radio']:checked").first
+            checked_radio = field.locator("input[type='radio']:checked, [role='radio'][aria-checked='true']").first
+            if checked_radio.count() == 0:
+                # Fallback: check each radio input's property
+                for r in field.locator("input[type='radio']").all():
+                    try:
+                        if r.is_checked():
+                            checked_radio = r
+                            break
+                    except:
+                        pass
+
             if checked_radio.count() > 0:
-                # Try to find associated label text
+                # 4.1 Try associated label via id
                 radio_id = checked_radio.get_attribute("id")
                 if radio_id:
-                    label = self.page.locator(f"label[for='{radio_id}']").first
-                    if label.count() > 0:
-                        return label.inner_text().strip()
-                return "Yes" # Default fallback for checked radio
+                    try:
+                        label = field.locator(f"label[for='{radio_id}']").first
+                        if label.count() > 0:
+                            t = label.inner_text().strip()
+                            if t: return re.sub(r'\s*\*+\s*$', '', t).strip()
+                    except:
+                        pass
+                # 4.2 Try ancestor label
+                try:
+                    parent_lbl = checked_radio.locator("xpath=ancestor::label[1]").first
+                    if parent_lbl.count() > 0:
+                        t = parent_lbl.inner_text().strip()
+                        if t: return re.sub(r'\s*\*+\s*$', '', t).strip()
+                except:
+                    pass
+                # 4.3 Try parent container text
+                try:
+                    parent_wrap = checked_radio.locator("xpath=..").first
+                    if parent_wrap.count() > 0:
+                        t = parent_wrap.inner_text().strip()
+                        if t: return re.sub(r'\s*\*+\s*$', '', t).strip()
+                except:
+                    pass
+                # 4.4 Try value or aria-label
+                val = checked_radio.get_attribute("value") or checked_radio.get_attribute("aria-label")
+                if val and str(val).strip():
+                    return str(val).strip()
+                return "Checked"
             
             # 5. Try Checkbox
             checkbox = field.locator("input[type='checkbox']").first
@@ -1803,22 +1881,145 @@ class SmartFormFiller:
                 logger.debug(f"Selected: {final_value}", step="fill_field")
                 
             elif field_type == "radio":
-                # Match label exactly (case-insensitive)
-                label = field.locator("label").filter(has_text=re.compile(rf"^\s*{re.escape(str(final_value))}\s*$", re.I)).first
-                if label.count() > 0:
-                    label.click()
-                    logger.debug(f"Radio selected via exact label: {final_value}", step="fill_field")
-                else:
-                    # Match label partially / fuzzy
-                    label_sub = field.locator("label").filter(has_text=re.compile(rf"{re.escape(str(final_value))}", re.I)).first
-                    if label_sub.count() > 0:
-                        label_sub.click()
-                        logger.debug(f"Radio selected via partial label: {final_value}", step="fill_field")
-                    else:
-                        radio = field.locator(f"input[type='radio'][value='{final_value}']").first
-                        if radio.count() > 0:
-                            radio.click()
-                            logger.debug(f"Radio selected via input value: {final_value}", step="fill_field")
+                target_str = str(final_value).strip().lower()
+                is_target_yes = target_str in ["yes", "true", "1", "y"]
+                is_target_no = target_str in ["no", "false", "0", "n"]
+                
+                radios = field.locator("input[type='radio'], [role='radio']").all()
+                selected = False
+                
+                # Check each radio element
+                for r in radios:
+                    r_val = (r.get_attribute("value") or "").strip().lower()
+                    r_id = r.get_attribute("id") or ""
+                    r_aria = (r.get_attribute("aria-label") or "").strip().lower()
+                    
+                    candidate_texts = []
+                    if r_val:
+                        candidate_texts.append(r_val)
+                    if r_aria:
+                        candidate_texts.append(r_aria)
+                        
+                    if r_id:
+                        try:
+                            lbl = field.locator(f"label[for='{r_id}']").first
+                            if lbl.count() > 0:
+                                t = lbl.inner_text().strip().lower()
+                                if t: candidate_texts.append(t)
+                        except:
+                            pass
+                            
+                    try:
+                        parent_lbl = r.locator("xpath=ancestor::label[1]").first
+                        if parent_lbl.count() > 0:
+                            t = parent_lbl.inner_text().strip().lower()
+                            if t: candidate_texts.append(t)
+                    except:
+                        pass
+                        
+                    try:
+                        parent_wrap = r.locator("xpath=..").first
+                        if parent_wrap.count() > 0:
+                            t = parent_wrap.inner_text().strip().lower()
+                            if t: candidate_texts.append(t)
+                    except:
+                        pass
+
+                    # Determine match
+                    matched = False
+                    for txt in candidate_texts:
+                        if txt == target_str:
+                            matched = True
+                            break
+                        if is_target_yes and (txt in ["yes", "true", "1"] or re.search(r'\byes\b', txt)):
+                            matched = True
+                            break
+                        if is_target_no and (txt in ["no", "false", "0"] or re.search(r'\bno\b', txt)):
+                            matched = True
+                            break
+                        if target_str in txt or txt in target_str:
+                            matched = True
+                            break
+                            
+                    if matched:
+                        try:
+                            r.scroll_into_view_if_needed(timeout=1000)
+                        except:
+                            pass
+                            
+                        # 1. Playwright direct check
+                        try:
+                            r.check(force=True, timeout=1500)
+                            selected = True
+                        except:
+                            pass
+                            
+                        # 2. DOM Event evaluation (crucial for modern React & Horizon UI)
+                        try:
+                            r.evaluate("""el => {
+                                el.checked = true;
+                                if (el.setAttribute) el.setAttribute('aria-checked', 'true');
+                                el.dispatchEvent(new Event('click', { bubbles: true }));
+                                el.dispatchEvent(new Event('change', { bubbles: true }));
+                                el.dispatchEvent(new Event('input', { bubbles: true }));
+                            }""")
+                            selected = True
+                        except:
+                            pass
+                            
+                        # 3. Click associated label if present
+                        if r_id:
+                            try:
+                                lbl = field.locator(f"label[for='{r_id}']").first
+                                if lbl.count() > 0:
+                                    lbl.click(force=True, timeout=1000)
+                                    selected = True
+                            except:
+                                pass
+                                
+                        # 4. Click parent wrapper if present
+                        try:
+                            parent_wrap = r.locator("xpath=ancestor::*[self::label or self::div][1]").first
+                            if parent_wrap.count() > 0:
+                                parent_wrap.click(force=True, timeout=1000)
+                                selected = True
+                        except:
+                            pass
+                            
+                        # 5. Verify checked property
+                        try:
+                            if not r.is_checked():
+                                r.evaluate("el => { el.checked = true; el.dispatchEvent(new Event('change', { bubbles: true })); }")
+                        except:
+                            pass
+                            
+                        logger.info(f"✅ Radio selected for '{target_str}': matched candidate {candidate_texts}", step="fill_field")
+                        break
+
+                # Fallback: if no radio input matched, search labels and clickable spans/divs
+                if not selected:
+                    labels = field.locator("label, div[role='radio'], span[role='radio']").all()
+                    for lbl in labels:
+                        lbl_text = (lbl.inner_text() or "").strip().lower()
+                        lbl_match = False
+                        if lbl_text == target_str:
+                            lbl_match = True
+                        elif is_target_yes and (lbl_text in ["yes", "true", "1"] or re.search(r'\byes\b', lbl_text)):
+                            lbl_match = True
+                        elif is_target_no and (lbl_text in ["no", "false", "0"] or re.search(r'\bno\b', lbl_text)):
+                            lbl_match = True
+                        elif target_str in lbl_text:
+                            lbl_match = True
+                            
+                        if lbl_match:
+                            try:
+                                lbl.scroll_into_view_if_needed(timeout=1000)
+                                lbl.click(force=True, timeout=1500)
+                                selected = True
+                                logger.info(f"✅ Radio selected via fallback element click: '{lbl_text}'", step="fill_field")
+                                break
+                            except:
+                                continue
                     
             elif field_type == "checkbox":
                 checkbox = field.locator("input[type='checkbox']").first
