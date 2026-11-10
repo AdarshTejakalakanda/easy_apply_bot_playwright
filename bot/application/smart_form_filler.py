@@ -227,24 +227,15 @@ class SmartFormFiller:
             # 3. Explicit error text
             error_text_selectors = [
                 "p:has-text('Invalid input')",
+                "span:has-text('Invalid input')",
                 "p:has-text('Please enter a valid')",
                 "p:has-text('Please enter a whole number')",
                 "p:has-text('Enter a whole number')",
                 "p:has-text('Please enter a decimal number')",
                 "p:has-text('Please make a selection')",
                 "p:has-text('Make a selection')",
-                "p:has-text('Please select')",
-                "p:has-text('Select an option')",
                 "p:has-text('Please enter between')",
-                "[data-testid='text-input-helper-text']:has-text('Invalid')",
-                "[data-testid='text-input-helper-text']:has-text('valid')",
-                "[data-testid='text-input-helper-text']:has-text('required')",
-                "[data-testid='text-input-helper-text']:has-text('select')",
-                "[data-testid='text-input-helper-text']:has-text('whole number')",
-                "[data-testid='text-input-helper-text']:has-text('enter')",
-                "span:has-text('Invalid input')",
-                ".artdeco-inline-feedback--error",
-                "[role='alert']"
+                "[data-testid='text-input-helper-text']:has-text('Invalid input')"
             ]
             for sel in error_text_selectors:
                 try:
