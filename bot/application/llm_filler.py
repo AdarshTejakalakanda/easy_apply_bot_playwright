@@ -11,6 +11,22 @@ load_dotenv()
 logger = logging.getLogger("bot.application.llm_filler")
 
 class LLMFiller:
+    # Supported Gemini text/JSON generation models in priority order for fallback
+    # Prioritizes Google's recommended models (Gemini 3.8 Flash and Gemini 3.5 Flash-Lite)
+    DEFAULT_GEMINI_MODELS = [
+        "gemini-3.8-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+        "gemini-3.1-pro-preview",
+        "gemini-3-flash-preview",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-2.5-pro",
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-lite"
+    ]
+
     def __init__(self, candidate_profile: dict):
         self.candidate_profile = candidate_profile
         self.profile_data = candidate_profile.get('profile_data', {})
@@ -28,8 +44,9 @@ class LLMFiller:
         self.gemini_key = os.getenv("GEMINI_API_KEY")
         self.openai_key = os.getenv("OPENAI_API_KEY")
         
-        # Primary Gemini Model
-        self.primary_model = "gemini-2.5-flash"
+        # Primary Gemini Model (defaults to latest recommended gemini-3.8-flash or custom env var)
+        self.primary_model = os.getenv("GEMINI_MODEL", self.DEFAULT_GEMINI_MODELS[0])
+        self.gemini_models = [self.primary_model] + [m for m in self.DEFAULT_GEMINI_MODELS if m != self.primary_model]
         
         # Load resume text from system_prompt_txt (highest priority) or PDF
         self.resume_text = self._load_resume_text()
@@ -373,20 +390,7 @@ Respond strictly in valid JSON matching this schema:
 Do NOT include markdown backticks or explanations outside the JSON object.
 """
 
-        models_to_try = [
-            "gemini-2.5-flash",
-            "gemini-3.7-flash",
-            "gemini-3.6-flash",
-            "gemini-3.5-flash",
-            "gemini-3.5-flash-lite",
-            "gemini-3.1-flash-lite",
-            "gemini-3.1-pro-preview",
-            "gemini-3-flash-preview",
-            "gemini-2.0-flash",
-            "gemini-2.0-flash-lite"
-        ]
-
-        for model in models_to_try:
+        for model in self.gemini_models:
             use_cache = (self.cache_id and model == self.primary_model)
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.gemini_key}"
 
@@ -587,21 +591,7 @@ Available Options: {options_str}
 Do not return any other text, markdown formatting, or prefix. Return ONLY the JSON object.
 """
         
-        # Candidate models to try in sequence to bypass 429 limitations
-        models_to_try = [
-            "gemini-2.5-flash",
-            "gemini-3.7-flash",
-            "gemini-3.6-flash",
-            "gemini-3.5-flash",
-            "gemini-3.5-flash-lite",
-            "gemini-3.1-flash-lite",
-            "gemini-3.1-pro-preview",
-            "gemini-3-flash-preview",
-            "gemini-2.0-flash",
-            "gemini-2.0-flash-lite"
-        ]
-        
-        for model in models_to_try:
+        for model in self.gemini_models:
             # Context caching is only compatible/supported with the primary model
             use_cache = (self.cache_id and model == self.primary_model)
             
@@ -855,20 +845,7 @@ Respond strictly with valid JSON matching this schema:
 Do NOT include markdown backticks outside JSON. Return ONLY the JSON object.
 """
 
-        models_to_try = [
-            "gemini-2.5-flash",
-            "gemini-3.7-flash",
-            "gemini-3.6-flash",
-            "gemini-3.5-flash",
-            "gemini-3.5-flash-lite",
-            "gemini-3.1-flash-lite",
-            "gemini-3.1-pro-preview",
-            "gemini-3-flash-preview",
-            "gemini-2.0-flash",
-            "gemini-2.0-flash-lite"
-        ]
-
-        for model in models_to_try:
+        for model in self.gemini_models:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.gemini_key}"
             payload = {
                 "contents": [{

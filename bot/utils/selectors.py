@@ -3,18 +3,18 @@
 #project-bot-easy-apply-python-playwright\bot\utils\selectors.py
 LOCATORS = {
     "next": {
-        "primary": "button[aria-label='Continue to next step'], button[aria-label*='next step'], button[aria-label*='Continue'], footer button.artdeco-button--primary:has-text('Next'), footer button.artdeco-button--primary:has-text('Continue')",
-        "fallback": "button.artdeco-button--primary:has-text('Next'), button.artdeco-button--primary:has-text('Continue'), //button[contains(., 'Next') or contains(., 'Continue')]"
+        "primary": "button[aria-label='Continue to next step']:not(:has-text('Add')):not([aria-label*='Add']), button[aria-label*='next step']:not(:has-text('Add')):not([aria-label*='Add']), button[aria-label*='Continue']:not(:has-text('Add')):not([aria-label*='Add']), button.artdeco-button--primary:has-text('Next'):not(:has-text('Add')), button.artdeco-button--primary:has-text('Continue'):not(:has-text('Add')), footer button.artdeco-button--primary:has-text('Next'), .artdeco-modal__actionbar button.artdeco-button--primary:has-text('Next')",
+        "fallback": "button:has-text('Next'):not(:has-text('Add')):not([aria-label*='Add']), button:has-text('Continue'):not(:has-text('Add')):not([aria-label*='Add']), //button[(contains(., 'Next') or contains(., 'Continue')) and not(contains(., 'Add'))]"
     },
     
     "review": {
-        "primary": "button[aria-label='Review your application'], button[aria-label*='Review'], footer button.artdeco-button--primary:has-text('Review')",
-        "fallback": "button.artdeco-button--primary:has-text('Review'), //button[contains(., 'Review')]"
+        "primary": "button[aria-label='Review your application']:not(:has-text('Add')), button[aria-label*='Review']:not(:has-text('Add')), button.artdeco-button--primary:has-text('Review'):not(:has-text('Add')), footer button.artdeco-button--primary:has-text('Review'), .artdeco-modal__actionbar button.artdeco-button--primary:has-text('Review')",
+        "fallback": "button:has-text('Review'):not(:has-text('Add')):not([aria-label*='Add']), //button[contains(., 'Review') and not(contains(., 'Add'))]"
     },
     
     "submit": {
-        "primary": "button[aria-label='Submit application'], button[aria-label*='Submit application'], button[aria-label*='Submit your application'], footer button.artdeco-button--primary:has-text('Submit')",
-        "fallback": "button.artdeco-button--primary:has-text('Submit'), button[type='submit']:has-text('Submit'), //button[contains(., 'Submit')]"
+        "primary": "button[aria-label='Submit application']:not(:has-text('Add')), button[aria-label*='Submit application']:not(:has-text('Add')), button[aria-label*='Submit your application']:not(:has-text('Add')), button.artdeco-button--primary:has-text('Submit'):not(:has-text('Add')), footer button.artdeco-button--primary:has-text('Submit'), .artdeco-modal__actionbar button.artdeco-button--primary:has-text('Submit')",
+        "fallback": "button:has-text('Submit'):not(:has-text('Add')):not([aria-label*='Add']), button[type='submit']:has-text('Submit'):not(:has-text('Add')), //button[contains(., 'Submit') and not(contains(., 'Add'))]"
     },
     "error": {
         "primary": ".artdeco-inline-feedback--error",

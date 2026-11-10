@@ -444,11 +444,14 @@ class Workflow:
 
     def get_elements(self, type) -> list:
         """
-        Get elements by type from locators
+        Get elements by type from locators, checking primary and then fallback selector
         """
         selector = get_locator(type)
         if selector and self.is_present(selector):
             return self.page.locator(selector).all()
+        fallback = get_locator(type, use_fallback=True)
+        if fallback and fallback != selector and self.is_present(fallback):
+            return self.page.locator(fallback).all()
         return []
 
     def is_present(self, selector):
@@ -488,6 +491,16 @@ class Workflow:
             while loop < 40:  # Multi-page resilient loop
                 time.sleep(1)
                 
+                # Auto-cancel any open "Add education" / "Add experience" blank subforms to prevent form blocking
+                try:
+                    edu_cancel = self.page.locator(".jobs-easy-apply-form-section__grouping button:has-text('Cancel'), .jobs-easy-apply-modal__content button[aria-label*='Cancel'], .jobs-easy-apply-modal__content button:has-text('Cancel')").first
+                    if edu_cancel.count() > 0 and edu_cancel.is_visible():
+                        logger.info("Dismissing open Add Education/Experience subform via Cancel button to preserve profile data", job_id=jobID, step="education")
+                        self._safe_click(edu_cancel)
+                        time.sleep(1)
+                except Exception as e:
+                    logger.debug(f"Check cancel button note: {e}")
+
                 # Handle Document Upload Redesign Cards
                 try:
                     resume_cards = self.page.locator(".jobs-document-upload-redesign-card__container").all()
@@ -653,6 +666,16 @@ class Workflow:
                 elif len(self.get_elements("next")) > 0:
                     elements = self.get_elements("next")
                     for element in elements:
+                        # Safety filter: NEVER click "Add", "Add more", "Add education", or "Add degree" buttons
+                        try:
+                            btn_text = (element.text_content() or "").strip().lower()
+                            aria_label = (element.get_attribute("aria-label") or "").strip().lower()
+                            if "add" in btn_text or "add" in aria_label:
+                                logger.debug(f"Skipping Add button: text='{btn_text}', aria='{aria_label}'", step="next")
+                                continue
+                        except Exception:
+                            pass
+                            
                         element.wait_for(state="visible", timeout=5000)
                         self._safe_click(element)
                         form_pages += 1
@@ -663,6 +686,16 @@ class Workflow:
                 elif len(self.get_elements("review")) > 0:
                     elements = self.get_elements("review")
                     for element in elements:
+                        # Safety filter: NEVER click "Add" buttons
+                        try:
+                            btn_text = (element.text_content() or "").strip().lower()
+                            aria_label = (element.get_attribute("aria-label") or "").strip().lower()
+                            if "add" in btn_text or "add" in aria_label:
+                                logger.debug(f"Skipping Add button: text='{btn_text}', aria='{aria_label}'", step="review")
+                                continue
+                        except Exception:
+                            pass
+                            
                         element.wait_for(state="visible", timeout=5000)
                         self._safe_click(element)
                         form_pages += 1
@@ -679,6 +712,24 @@ class Workflow:
                         break
                 
                 else:
+                    # Check direct text fallback for Next / Review buttons inside modal
+                    try:
+                        modal_next = self.page.locator(".jobs-easy-apply-modal button").filter(has_text=re.compile(r"^\s*(?:Next|Continue)\s*$", re.I)).first
+                        modal_review = self.page.locator(".jobs-easy-apply-modal button").filter(has_text=re.compile(r"^\s*Review\s*$", re.I)).first
+                        
+                        if modal_next.count() > 0 and modal_next.is_visible():
+                            self._safe_click(modal_next)
+                            form_pages += 1
+                            logger.info(f"Clicked Next button via modal text fallback (page {form_pages})", job_id=jobID, step="next")
+                            continue
+                        elif modal_review.count() > 0 and modal_review.is_visible():
+                            self._safe_click(modal_review)
+                            form_pages += 1
+                            logger.info(f"Clicked Review button via modal text fallback (page {form_pages})", job_id=jobID, step="review")
+                            continue
+                    except Exception:
+                        pass
+
                     # No buttons found - check if complete or stuck
                     logger.warning(f"⚠️ No Next/Review/Submit buttons found (loop {loop})", job_id=jobID, step="no_action")
                     
