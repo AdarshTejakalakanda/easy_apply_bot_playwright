@@ -73,16 +73,13 @@ class Workflow:
     def is_modal_open(self) -> bool:
         """Check if an Easy Apply modal or application dialog is currently visible on screen"""
         modal_content_selectors = [
+            "dialog[open][data-testid='dialog']",
+            "dialog[open]:has(button)",
             "dialog[open]",
-            "dialog[data-testid='dialog']",
-            "dialog",
-            ".jobs-easy-apply-modal__content",
-            ".artdeco-modal__content",
-            "div[data-test-easy-apply-form-container]",
             ".jobs-easy-apply-modal",
-            "div[data-test-modal]",
-            ".artdeco-modal",
-            "div[role='dialog']"
+            "div[data-test-easy-apply-form-container]",
+            "div[role='dialog']:has-text('Easy Apply')",
+            "div[role='dialog']:has(button:has-text('Next'), button:has-text('Review'), button:has-text('Submit'))"
         ]
         for sel in modal_content_selectors:
             try:
@@ -95,14 +92,6 @@ class Workflow:
                         continue
             except Exception:
                 continue
-        try:
-            fields = self.page.locator(".jobs-easy-apply-form-section__grouping, .fb-dash-form-element, .jobs-easy-apply-form-element, [data-test-form-builder-component]")
-            if fields.count() > 0:
-                for f in fields.all():
-                    if f.is_visible():
-                        return True
-        except Exception:
-            pass
         return False
 
     def apply_to_job(self, jobID, phone_number):
@@ -231,13 +220,13 @@ class Workflow:
         STRICT ZERO-DISCARD POLICY: Under no circumstances does this click 'Discard' or close an in-progress application.
         """
         try:
-            # ONLY dismiss confirmation modals if the application was ALREADY successfully submitted
             if is_submitted:
                 done_selectors = [
-                    "button:has-text('Done')",
-                    "button:has-text('Dismiss')",
-                    "button[aria-label='Dismiss']",
-                    "button.artdeco-modal__dismiss"
+                    "dialog[open] button:has-text('Done')",
+                    "dialog[open] button:has-text('Dismiss')",
+                    "dialog[open] button[aria-label='Dismiss']",
+                    ".jobs-easy-apply-modal button:has-text('Done')",
+                    ".jobs-easy-apply-modal button:has-text('Dismiss')"
                 ]
                 for sel in done_selectors:
                     try:
@@ -388,13 +377,13 @@ class Workflow:
 
     @retry(max_attempts=3, delay=1)
     def get_job_page(self, jobID):
-        """Ensure preview panel is loaded for jobID by verifying and clicking the job card"""
+        """Ensure preview panel is loaded for jobID by clicking the job card container"""
         try:
-            current_url = self.page.url
-            if f'currentJobId={jobID}' in current_url:
-                logger.debug(f'Preview panel already loaded for job {jobID}', step='get_job_page')
+            preview = self.page.locator(".jobs-search__job-details, .job-view-layout, [data-view-name='job-details']").first
+            if preview.count() > 0 and preview.locator("button[aria-label*='Easy Apply'], button:has-text('Easy Apply')").count() > 0:
+                logger.debug(f'Preview panel already loaded with Easy Apply for job {jobID}', step='get_job_page')
                 return
-            logger.debug(f'Ensuring preview panel is loaded for job {jobID}', step='get_job_page')
+
             card_selectors = [
                 f"div[componentkey='job-card-component-ref-{jobID}']",
                 f"[componentkey*='{jobID}']",
@@ -406,112 +395,82 @@ class Workflow:
                     card = self.page.locator(c_sel).first
                     if card.count() > 0:
                         card.scroll_into_view_if_needed(timeout=1000)
-                        title_link = card.locator("a[href*='/jobs/view/'], a[href*='currentJobId='], [data-view-name='job-card-title'], a").first
-                        if title_link.count() > 0 and title_link.is_visible():
-                            title_link.click(timeout=2000)
-                        else:
-                            card.click(timeout=2000)
+                        card.click(timeout=2000)
                         time.sleep(1.5)
-                        break
+                        return
                 except Exception:
                     continue
         except Exception as e:
             logger.debug(f'get_job_page note: {e}', step='get_job_page')
+
     def get_easy_apply_button(self):
         """
-        Find and return the Easy Apply button in the preview panel
-        (NOT the full job page - LinkedIn hides it there!)
+        Find and return the Easy Apply button in the preview panel.
+        Strictly requires 'Easy Apply' to avoid clicking external apply buttons or nav links.
         """
         try:
-            # Wait for preview panel to load
-            import time
-            logger.debug("Waiting for preview panel with Easy Apply button...", step="get_button")
+            if "/jobs/" not in self.page.url:
+                logger.warning("Browser navigated away from jobs page. Returning False to recover.", step="get_button")
+                return False
+
             time.sleep(1.5)  # Let preview panel settle
             
-            # Debug: Count all buttons on page
-            try:
-                all_buttons = self.page.locator("button").count()
-                logger.debug(f"Total buttons on page: {all_buttons}", step="get_button")
-            except:
-                pass
+            preview_containers = [
+                ".jobs-search__job-details",
+                ".job-view-layout",
+                "div[data-view-name='job-details']",
+                ".jobs-details__main-content",
+                ".jobs-details"
+            ]
             
-            # Try primary selector first (ID)
-            button_selector = get_locator("easy_apply_button")
-            logger.debug(f"Looking for Easy Apply button with selector: {button_selector}", step="get_button")
-            
-            try:
-                # Wait for button to appear with longer timeout
-                self.page.wait_for_selector(button_selector, timeout=10000, state="visible")
-                buttons = self.page.locator(button_selector).all()
-                logger.debug(f"Primary selector found {len(buttons)} buttons", step="get_button")
-                
-                for button in buttons:
-                    try:
-                        text = button.text_content(timeout=2000)
-                        if text and ("Apply" in text or "Continue" in text):
-                            logger.debug(f"Found Apply button: {text.strip()}", step="get_button")
-                            return button
-                    except:
-                        continue
-            except Exception as e:
-                logger.debug(f"Primary selector didn't find button: {e}", step="get_button")
-            
-            # Try fallback selector
-            fallback_selector = get_locator("easy_apply_button", use_fallback=True)
-            if fallback_selector and fallback_selector != button_selector:
-                logger.debug(f"Trying fallback selector: {fallback_selector}", step="get_button")
+            for container_sel in preview_containers:
                 try:
-                    self.page.wait_for_selector(fallback_selector, timeout=10000, state="visible")
-                    buttons = self.page.locator(fallback_selector).all()
-                    logger.debug(f"Fallback selector found {len(buttons)} buttons", step="get_button")
-                    
-                    for button in buttons:
-                        try:
-                            text = button.text_content(timeout=2000)
-                            if text and ("Apply" in text or "Continue" in text):
-                                logger.debug(f"Found Apply button with fallback: {text.strip()}", step="get_button")
-                                return button
-                        except:
-                            continue
-                except Exception as e:
-                    logger.debug(f"Fallback selector didn't find button: {e}", step="get_button")
-            
-            # Try text-based selector as last resort
-            try:
-                logger.debug("Trying text-based selector", step="get_button")
-                button = self.page.get_by_role("button", name=re.compile("Apply|Continue", re.I)).first
-                if button.is_visible(timeout=2000):
-                    logger.debug("Found apply button with text selector", step="get_button")
-                    return button
-            except Exception as e:
-                logger.debug(f"Text-based selector didn't find button: {e}", step="get_button")
-            
-            # Debug: Try to find ANY button with "Easy Apply" in text
-            try:
-                logger.debug("Searching for any button containing 'Easy Apply' text...", step="get_button")
-                all_buttons = self.page.locator("button").all()
-                for i, btn in enumerate(all_buttons[:30]):  # Check first 30 buttons
-                    try:
-                        text = btn.text_content(timeout=1000)
-                        if text and ("Easy Apply" in text or "Continue" in text):
-                            logger.debug(f"Found button with text at index {i}: {text.strip()}", step="get_button")
-                            # Get its attributes
-                            btn_id = btn.get_attribute("id", timeout=1000)
-                            btn_class = btn.get_attribute("class", timeout=1000)
-                            logger.debug(f"  ID: {btn_id}, Class: {btn_class}", step="get_button")
+                    container = self.page.locator(container_sel).first
+                    if container.count() > 0 and container.is_visible():
+                        btn = container.locator(
+                            "button.jobs-apply-button, "
+                            "button[aria-label*='Easy Apply'], "
+                            "button:has-text('Easy Apply'), "
+                            "#jobs-apply-button-id"
+                        ).first
+                        if btn.count() > 0 and btn.is_visible():
+                            logger.debug("Found Easy Apply button in preview container", step="get_button")
                             return btn
-                    except:
-                        continue
-            except Exception as e:
-                logger.debug(f"Manual search failed: {e}", step="get_button")
-            
-            logger.debug("Easy Apply button not found after all attempts", step="get_button")
+                except Exception:
+                    continue
+
+            easy_apply_selectors = [
+                "button[aria-label*='Easy Apply']",
+                "button.jobs-apply-button:has-text('Easy Apply')",
+                "button.jobs-apply-button",
+                "button:has-text('Easy Apply')"
+            ]
+            for sel in easy_apply_selectors:
+                try:
+                    candidates = self.page.locator(sel).all()
+                    for btn in candidates:
+                        try:
+                            if not btn.is_visible():
+                                continue
+                            aria_label = (btn.get_attribute("aria-label") or "").lower()
+                            text = (btn.text_content() or "").lower()
+                            if "filter" in aria_label or "pill" in aria_label:
+                                continue
+                            if "easy apply" in aria_label or "easy apply" in text:
+                                logger.debug(f"Found Easy Apply button: aria='{aria_label}', text='{text}'", step="get_button")
+                                return btn
+                        except Exception:
+                            continue
+                except Exception:
+                    continue
+
+            logger.info("Easy Apply button not present for this job (may be external apply only).", step="get_button")
             return False
             
         except Exception as e:
             if self.metrics:
                 self.metrics.increment("failed")
-            logger.debug(f"Easy Apply button not found: {e}", step="get_button", exception=e)
+            logger.debug(f"Easy Apply button check error: {e}", step="get_button", exception=e)
             return False
 
     def get_elements(self, type) -> list:
@@ -921,15 +880,15 @@ class Workflow:
     def _verify_submission(self, jobID=None) -> bool:
         """Thoroughly check if the application was actually sent"""
         try:
-            success_confirmations = ["sent", "successfully", "done", "submitted", "received", "thanks", "application sent", "your application was sent"]
-            if self.is_present("dialog") or self.is_present(".artdeco-modal__content"):
-                content = (self.page.locator("dialog, .artdeco-modal__content").first.text_content(timeout=3000) or "").lower()
-                if any(word in content for word in success_confirmations):
+            modal = self.page.locator("dialog[open], .jobs-easy-apply-modal, .artdeco-modal").first
+            if modal.count() > 0 and modal.is_visible():
+                content = (modal.text_content(timeout=1000) or "").lower()
+                success_phrases = ["your application was sent", "application sent", "application submitted"]
+                if any(phrase in content for phrase in success_phrases):
                     return True
 
-            if self.is_present("h2:has-text('Application sent')") or self.is_present("h2:has-text('successfully')") or self.is_present("h3:has-text('Application sent')") or self.is_present("*:has-text('Application sent')"):
+            if self.page.locator("h2:has-text('Application sent'), h3:has-text('Application sent')").count() > 0:
                 return True
-
 
             return False
         except:

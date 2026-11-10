@@ -6,78 +6,60 @@ class JobIdentity:
     def extract_job_id(element):
         """
         Extracts job ID from a job card element (Playwright locator).
-        Supports Horizon UI componentkey, currentJobId URL parameter, data attributes, and child anchors.
+        Tries multiple methods supporting classic and modern Horizon UI.
         """
         try:
-            # Method 1: Try componentkey attribute (Horizon UI e.g. "job-card-component-ref-4486830495")
+            # Method 0: Modern Horizon UI componentkey (e.g., job-card-component-ref-4486845045)
             try:
-                ck = element.get_attribute("componentkey", timeout=1000)
-                if ck:
-                    m = re.search(r'\d{7,14}', ck)
+                comp_key = element.get_attribute("componentkey", timeout=1000)
+                if comp_key:
+                    m = re.search(r"job-card-component-ref-(\d+)", comp_key)
                     if m:
-                        return m.group()
+                        return m.group(1)
             except:
                 pass
 
-            # Method 2: Try currentJobId in child links
-            try:
-                link = element.locator("a[href*='currentJobId=']").first
-                if link.count() > 0:
-                    href = link.get_attribute("href", timeout=1000)
-                    if href:
-                        m = re.search(r'currentJobId=(\d+)', href)
-                        if m:
-                            return m.group(1)
-            except:
-                pass
-
-            # Method 3: Try data-job-id attribute on element or children
+            # Method 1: Try data-job-id attribute
             try:
                 job_id = element.get_attribute("data-job-id", timeout=1000)
-                if job_id and job_id.isdigit():
-                    return job_id
-                child = element.locator("[data-job-id]").first
-                if child.count() > 0:
-                    job_id = child.get_attribute("data-job-id", timeout=1000)
-                    if job_id and job_id.isdigit():
-                        return job_id
+                if job_id and str(job_id).isdigit():
+                    return str(job_id)
             except:
                 pass
             
-            # Method 4: Try data-occludable-job-id attribute
+            # Method 2: Try data-occludable-job-id attribute
             try:
                 job_id = element.get_attribute("data-occludable-job-id", timeout=1000)
-                if not job_id:
-                    child = element.locator("[data-occludable-job-id]").first
-                    if child.count() > 0:
-                        job_id = child.get_attribute("data-occludable-job-id", timeout=1000)
                 if job_id:
                     if ":" in job_id:
                         job_id = job_id.split(":")[-1]
-                    if job_id.isdigit():
-                        return job_id
+                    if str(job_id).isdigit():
+                        return str(job_id)
             except:
                 pass
             
-            # Method 5: Try to find job ID in href of child link (/jobs/view/1234567890/)
+            # Method 3: Try to find job ID in child links (href with /jobs/view/ or currentJobId=)
             try:
-                link = element.locator("a[href*='/jobs/view/']").first
-                if link.count() > 0:
+                links = element.locator("a[href*='/jobs/view/'], a[href*='currentJobId='], a").all()
+                for link in links[:3]:
                     href = link.get_attribute("href", timeout=1000)
-                    if href:
-                        m = re.search(r'/jobs/view/(\d+)', href)
-                        if m:
-                            return m.group(1)
+                    if not href:
+                        continue
+                    if "/jobs/view/" in href:
+                        parts = href.split("/jobs/view/")
+                        if len(parts) > 1:
+                            jid = parts[1].split("/")[0].split("?")[0]
+                            if jid.isdigit():
+                                return jid
+                    m = re.search(r"currentJobId=(\d+)", href)
+                    if m:
+                        return m.group(1)
             except:
                 pass
             
-            # Method 6: Try data-entity-urn
+            # Method 4: Try data-entity-urn
             try:
                 urn = element.get_attribute("data-entity-urn", timeout=1000)
-                if not urn:
-                    child = element.locator("[data-entity-urn]").first
-                    if child.count() > 0:
-                        urn = child.get_attribute("data-entity-urn", timeout=1000)
                 if urn and ":" in urn:
                     job_id = urn.split(":")[-1]
                     if job_id.isdigit():
@@ -85,11 +67,12 @@ class JobIdentity:
             except:
                 pass
 
-            # Method 7: Search all child anchors for numeric job IDs
+            # Method 5: Check nested element componentkey
             try:
-                for a in element.locator("a[href]").all()[:4]:
-                    href = a.get_attribute("href") or ""
-                    m = re.search(r'(?:jobId|view|currentJobId)[=/](\d{7,12})', href)
+                nested = element.locator("[componentkey^='job-card-component-ref-']").first
+                if nested.count() > 0:
+                    ck = nested.get_attribute("componentkey", timeout=1000)
+                    m = re.search(r"job-card-component-ref-(\d+)", ck or "")
                     if m:
                         return m.group(1)
             except:
@@ -101,4 +84,3 @@ class JobIdentity:
         except Exception as e:
             logger.debug(f"Failed to extract job ID: {e}", step="extract_job_id")
             return None
-

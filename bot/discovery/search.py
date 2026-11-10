@@ -189,30 +189,18 @@ class Search:
                             scroll_tracker.add_job(job_id)
                             continue
 
-                    # Resilient click on job card container to open preview and Easy Apply button
+                    # Click job card container directly to load preview panel without navigating away
                     try:
+                        link.scroll_into_view_if_needed(timeout=1000)
+                        link.click(timeout=2000)
+                        time.sleep(1.5)
+                    except Exception:
                         try:
-                            link.scroll_into_view_if_needed(timeout=1000)
-                        except Exception:
-                            pass
-                        card_clicked = False
-                        for title_sel in ["a[href*='/jobs/view/']", "a[href*='currentJobId=']", "[data-view-name='job-card-title']", "a.job-card-list__title", "a"]:
-                            try:
-                                title_elem = link.locator(title_sel).first
-                                if title_elem.count() > 0 and title_elem.is_visible():
-                                    title_elem.click(timeout=2000)
-                                    card_clicked = True
-                                    break
-                            except Exception:
-                                continue
-                        if not card_clicked:
-                            try:
-                                link.click(timeout=2000)
-                            except Exception:
-                                link.evaluate("el => el.click()")
-                        time.sleep(2)
-                    except Exception as click_err:
-                        logger.warning(f"Could not click job card: {click_err}", step="job_search")
+                            link.evaluate("el => el.click()")
+                            time.sleep(1.5)
+                        except Exception as click_err:
+                            logger.warning(f"Could not click job card: {click_err}", step="job_search")
+
                     self.workflow.apply_to_job(job_id, self.phone_number)
                     scroll_tracker.add_job(job_id)
                 
