@@ -681,8 +681,9 @@ class Workflow:
 
                 # Check for review button (before next button)
                 elif len(self.get_elements("review")) > 0:
-                    if self.has_visible_errors():
-                        logger.warning("⚠️ Form errors before Review click - Resolving...", job_id=jobID, step="review")
+                    needs_res = self.has_visible_errors() or (hasattr(self.form_filler, 'has_unfilled_fields') and self.form_filler.has_unfilled_fields())
+                    if needs_res:
+                        logger.warning("⚠️ Form errors or unfilled fields before Review click - Resolving...", job_id=jobID, step="review")
                         if hasattr(self.form_filler, 'handle_errored_fields'):
                             self.form_filler.handle_errored_fields()
 
@@ -703,8 +704,8 @@ class Workflow:
                         time.sleep(1.5)
 
                         # Check if LinkedIn highlighted unfilled required fields after clicking Review
-                        if self.has_visible_errors():
-                            logger.warning("⚠️ Validation errors triggered after Review click - Resolving...", job_id=jobID, step="review")
+                        if self.has_visible_errors() or (hasattr(self.form_filler, 'has_unfilled_fields') and self.form_filler.has_unfilled_fields()):
+                            logger.warning("⚠️ Validation errors or unfilled fields detected after Review click - Resolving...", job_id=jobID, step="review")
                             if hasattr(self.form_filler, 'handle_errored_fields'):
                                 self.form_filler.handle_errored_fields()
                         else:
@@ -714,8 +715,9 @@ class Workflow:
 
                 # Check for next button
                 elif len(self.get_elements("next")) > 0:
-                    if self.has_visible_errors():
-                        logger.warning("⚠️ Form errors before Next click - Resolving...", job_id=jobID, step="next")
+                    needs_res = self.has_visible_errors() or (hasattr(self.form_filler, 'has_unfilled_fields') and self.form_filler.has_unfilled_fields())
+                    if needs_res:
+                        logger.warning("⚠️ Form errors or unfilled fields before Next click - Resolving...", job_id=jobID, step="next")
                         if hasattr(self.form_filler, 'handle_errored_fields'):
                             self.form_filler.handle_errored_fields()
 
@@ -738,8 +740,8 @@ class Workflow:
                         time.sleep(1.5)
 
                         # Check if LinkedIn highlighted unfilled required fields after clicking Next
-                        if self.has_visible_errors():
-                            logger.warning("⚠️ Validation errors triggered after Next click - Resolving...", job_id=jobID, step="next")
+                        if self.has_visible_errors() or (hasattr(self.form_filler, 'has_unfilled_fields') and self.form_filler.has_unfilled_fields()):
+                            logger.warning("⚠️ Validation errors or unfilled fields detected after Next click - Resolving...", job_id=jobID, step="next")
                             if hasattr(self.form_filler, 'handle_errored_fields'):
                                 self.form_filler.handle_errored_fields()
                         break

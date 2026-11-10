@@ -49,20 +49,31 @@ class SmartFormFiller:
     
     def _load_learned_answers(self):
         """Load previously learned answers for this candidate"""
-        
         if os.path.exists(self.learned_answers_file):
             try:
                 with open(self.learned_answers_file, 'r') as f:
-                    return json.load(f)
+                    data = json.load(f)
+                    # Filter out contaminated or invalid entries
+                    cleaned = {
+                        k: v for k, v in data.items()
+                        if str(v).strip().lower() not in ["on", "off", "none", "null", "undefined"]
+                        and str(k).strip().lower() != str(v).strip().lower()
+                    }
+                    return cleaned
             except Exception as e:
                 logger.warning(f"Could not load learned answers: {e}", step="init")
         return {}
     
     def _save_learned_answers(self):
         """Save learned answers for this candidate"""
-        
         try:
             os.makedirs(os.path.dirname(self.learned_answers_file), exist_ok=True)
+            # Filter out contaminated or invalid entries before saving
+            self.learned_answers = {
+                k: v for k, v in self.learned_answers.items()
+                if str(v).strip().lower() not in ["on", "off", "none", "null", "undefined"]
+                and str(k).strip().lower() != str(v).strip().lower()
+            }
             with open(self.learned_answers_file, 'w') as f:
                 json.dump(self.learned_answers, f, indent=2)
             logger.debug(f"Saved {len(self.learned_answers)} learned answers", step="save_answers")
@@ -167,12 +178,19 @@ class SmartFormFiller:
             logger.debug(f"Error querying form fields: {e}", step="fill_fields")
             return []
 
-    def _is_placeholder_or_empty(self, val: str) -> bool:
+    def _is_placeholder_or_empty(self, val: str, question_text: str = "") -> bool:
         """Return True if val is None, empty, whitespace, or a common dropdown/field placeholder prompt"""
         if val is None:
             return True
         v = str(val).strip().lower()
         if not v:
+            return True
+            
+        # Reject browser default values or raw boolean flags
+        if v in ["on", "off", "yes/no", "true/false"]:
+            return True
+            
+        if question_text and (v == question_text.strip().lower() or question_text.strip().lower() in v):
             return True
         
         # Remove trailing/leading punctuation
@@ -258,12 +276,58 @@ class SmartFormFiller:
                 # Check if strictly required field is empty
                 is_req = self._is_required_field(field)
                 if is_req:
-                    val = self._extract_filled_value(field)
-                    if not val or not str(val).strip():
+                    q_text = self._extract_question(field)
+                    val = self._extract_filled_value(field, q_text)
+                    if not val or not str(val).strip() or self._is_placeholder_or_empty(val, q_text):
                         return True
         except:
             pass
         return False
+
+    def _is_answer_valid_for_field(self, ans: str, field_type: str, options: list = None, data_type: str = None) -> bool:
+        """Validate if an answer matches the field constraints and options before accepting it from cache"""
+        if ans is None:
+            return False
+        s = str(ans).strip()
+        d_type = (data_type or field_type or "").upper()
+        
+        # 0. Checkbox / Boolean fields
+        if field_type == "checkbox" or d_type == "BOOLEAN":
+            return s.lower() in ["yes", "true", "1", "on", "checked", "agree", "no", "false", "0", "off"]
+
+        if not s or self._is_placeholder_or_empty(s):
+            return False
+        
+        # 1. Radio / Select fields with explicit options
+        if field_type in ["radio", "select"] or d_type in ["RADIO_OPTION", "SELECT_OPTION"]:
+            if options and len(options) > 0:
+                s_lower = s.lower()
+                clean_opts = [str(o).strip().lower() for o in options]
+                # Direct match
+                if s_lower in clean_opts:
+                    return True
+                # Boolean options ['yes', 'no']
+                if s_lower in ["yes", "true", "1"] and any("yes" in o for o in clean_opts):
+                    return True
+                if s_lower in ["no", "false", "0"] and any("no" in o for o in clean_opts):
+                    return True
+                # Substring match
+                if any(s_lower in o or o in s_lower for o in clean_opts):
+                    return True
+                return False
+                
+        # 2. Integer / Numeric fields
+        if d_type in ["INTEGER", "NUMBER"] or field_type == "number":
+            clean_digits = re.sub(r'\D', '', s)
+            if not clean_digits:
+                return False
+                
+        # 3. URL fields
+        if d_type == "URL_LINK" or "url" in field_type:
+            if not (s.startswith("http://") or s.startswith("https://") or "www." in s or "linkedin.com" in s):
+                return False
+                
+        return True
 
     def _get_local_answer(self, question_text: str, field_type: str, options: list = None, data_type: str = None):
         """Get answer exclusively from local sources and adapt dynamically to target live HTML data type"""
@@ -283,6 +347,15 @@ class SmartFormFiller:
             from bot.persistence.store import Store
             legacy_store = Store()
             raw_ans = legacy_store.get_answer(question_lower)
+
+        # Discard invalid raw answers (e.g. 'on', 'off' for non-checkbox, or question text)
+        if raw_ans is not None:
+            raw_str = str(raw_ans).strip()
+            if raw_str.lower() in ["on", "off"]:
+                if field_type != "checkbox":
+                    raw_ans = None
+            elif raw_str.lower() in ["none", "null", "undefined"] or raw_str.lower() == question_lower or question_lower in raw_str.lower():
+                raw_ans = None
         
         # 0.3 Smart keyword matching for common profile questions
         if raw_ans is None:
@@ -291,6 +364,12 @@ class SmartFormFiller:
         if raw_ans is not None:
             # Dynamically adapt stored/cached answer to the live HTML element's format and constraints
             adapted_ans = self._adapt_answer_to_target_field(raw_ans, field_type, data_type, options, question_text)
+            
+            # SCHEMA VALIDATION: Discard if adapted answer does not match field type and available options
+            if not self._is_answer_valid_for_field(adapted_ans, field_type, options, data_type):
+                logger.warning(f"⚠️ Cache answer '{adapted_ans}' does not match schema for '{question_text}' (type={field_type}, opts={options}). Discarding cache and sending to LLM.", step="get_local_answer")
+                return None
+                
             return adapted_ans
             
         return None
@@ -333,8 +412,8 @@ class SmartFormFiller:
                     
                     has_error = self._field_has_error(field)
                     
-                    existing_value = self._extract_filled_value(field)
-                    if existing_value and str(existing_value).strip() and not self._is_placeholder_or_empty(existing_value) and not force_refill and not has_error:
+                    existing_value = self._extract_filled_value(field, question_text)
+                    if existing_value and str(existing_value).strip() and not self._is_placeholder_or_empty(existing_value, question_text) and not force_refill and not has_error:
                         logger.info(f"Field {i+1}: '{question_text}' already has value '{existing_value}'. Skipping.", step="process_field")
                         continue
                     
@@ -485,13 +564,13 @@ class SmartFormFiller:
                 field_type = self._detect_field_type(field)
                 if field_type in ["file", "education_section", "work_experience_section", "button_container"] or field.locator("input, select, textarea").count() == 0:
                     continue
-                val = self._extract_filled_value(field)
+                q_text = self._extract_question(field)
+                val = self._extract_filled_value(field, q_text)
                 has_error = self._field_has_error(field)
 
                 # If field remains empty or in error state
-                if not val or has_error:
+                if not val or self._is_placeholder_or_empty(val, q_text) or has_error:
                     unfilled_count += 1
-                    q_text = self._extract_question(field)
                     logger.info(f"🔍 Re-sweep filling missed/empty field ({unfilled_count}): '{q_text}'", step="fill_fields")
                     try:
                         field.scroll_into_view_if_needed(timeout=1000)
@@ -523,8 +602,8 @@ class SmartFormFiller:
             has_error = self._field_has_error(field)
 
             # 1. Skip if already filled, UNLESS field has an active error
-            existing_value = self._extract_filled_value(field)
-            if existing_value and str(existing_value).strip() and not self._is_placeholder_or_empty(existing_value) and not has_error:
+            existing_value = self._extract_filled_value(field, question_text)
+            if existing_value and str(existing_value).strip() and not self._is_placeholder_or_empty(existing_value, question_text) and not has_error:
                 logger.info(f"Field {field_num}: '{question_text}' already has value '{existing_value}'. Skipping.", step="process_field")
                 return "skipped_filled"
 
@@ -1346,8 +1425,24 @@ class SmartFormFiller:
                 return self.profile_data.get('country_code', '+91')
             return self.profile_data.get('phone') or self.candidate_profile.get('credentials', {}).get('phone')
 
-        # Location / City
-        if 'city' in question_lower or 'location' in question_lower:
+        # Commute & In-Person Interview (must be checked before city/location)
+        if any(k in question_lower for k in ['commute', 'commuting', 'in person', 'in-person', 'attend in person', 'willing to travel', 'hybrid']):
+            return "Yes"
+
+        # Relocation (must be checked before city/location)
+        if 'relocate' in question_lower or 'relocation' in question_lower:
+            return self.profile_data.get('willing_to_relocate') or "Yes"
+
+        # Prior / Past Employment with the Company
+        if any(k in question_lower for k in [
+            'previously been employed', 'worked before', 'worked at', 'worked for', 
+            'former employee', 'previously worked', 'prior employee', 'engaged with',
+            'have you ever worked', 'have you previously worked'
+        ]):
+            return "No"
+
+        # Location / City (strictly questions asking for candidate's location/city - avoid 'capacity', 'commute', etc.)
+        if re.search(r'\bcity\b', question_lower) or (re.search(r'\blocation\b', question_lower) and not any(w in question_lower for w in ['comfortable', 'willing', 'commute', 'relocate', 'agree', 'able to', 'open to', 'capacity', 'travel'])):
             return self.profile_data.get('city') or self.learned_answers.get('Location (city)') or self.learned_answers.get('City') or 'Hyderabad'
 
         # 3. Experience & Skills
@@ -1392,6 +1487,32 @@ class SmartFormFiller:
         # 7. Availability / Start Date / Notice Period
         if any(k in question_lower for k in ['start', 'notice period', 'immediate', 'available to start', 'within the next', '1-2 weeks', '1–2 weeks', 'start date']):
             return "Yes"
+
+        # 7.1 Prior / Past Employment with the Company
+        if any(k in question_lower for k in [
+            'previously been employed', 'worked before', 'worked at', 'worked for', 
+            'former employee', 'previously worked', 'prior employee', 'engaged with',
+            'have you ever worked', 'have you previously worked'
+        ]):
+            return "No"
+
+        # 7.2 Background check / Screening consent
+        if any(k in question_lower for k in ['background check', 'drug test', 'screening']):
+            if 'convicted' in question_lower or 'criminal' in question_lower or 'felony' in question_lower:
+                return "No"
+            return "Yes"
+
+        # 7.3 Commute & In-Person Interview
+        if any(k in question_lower for k in ['commute', 'commuting', 'in person', 'in-person', 'attend in person', 'willing to travel', 'hybrid']):
+            return "Yes"
+
+        # 7.4 Consent / Privacy Policy / Future Job Opportunities / Terms / Agreement
+        if any(k in question_lower for k in [
+            'privacy policy', 'privacy notice', 'terms of service', 'terms and conditions', 
+            'contact me about future', 'future job opportunities', 'allow', 'consent',
+            'agree to', 'i agree', 'i acknowledge', 'terms of use'
+        ]):
+            return "Yes"
             
         # 8. Demographic Defaults (often grouped at end)
         if 'gender' in question_lower:
@@ -1413,9 +1534,9 @@ class SmartFormFiller:
         """
         try:
             # Absolute guard: Never ask human if field is already filled and has no error
-            existing = self._extract_filled_value(field)
+            existing = self._extract_filled_value(field, question_text)
             has_error = self._field_has_error(field)
-            if existing and str(existing).strip() and not self._is_placeholder_or_empty(existing) and not has_error:
+            if existing and str(existing).strip() and not self._is_placeholder_or_empty(existing, question_text) and not has_error:
                 logger.info(f"Field '{question_text}' already has valid value '{existing}' and no errors. Skipping human popup.", step="human_input")
                 return str(existing).strip()
 
@@ -1484,15 +1605,15 @@ class SmartFormFiller:
                 field_type = self._detect_field_type(field)
                 if field_type in ["file", "education_section", "work_experience_section", "button_container"] or field.locator("input, select, textarea").count() == 0:
                     continue
-                val = self._extract_filled_value(field)
+                question_text = self._extract_question(field)
+                if not question_text:
+                    continue
+                val = self._extract_filled_value(field, question_text)
                 has_error = self._field_has_error(field)
                 is_req = self._is_required_field(field)
 
                 # If field has error or is an empty/placeholder required field
-                if has_error or (is_req and (val is None or self._is_placeholder_or_empty(val))):
-                    question_text = self._extract_question(field)
-                    if not question_text:
-                        continue
+                if has_error or (is_req and (val is None or self._is_placeholder_or_empty(val, question_text))):
                     field_type = self._detect_field_type(field)
                     data_type = self._extract_html_data_type(field, field_type, question_text)
                     options = self._extract_options(field, field_type) if field_type in ["select", "radio"] else None
@@ -1582,9 +1703,9 @@ class SmartFormFiller:
                 is_req = item["is_required"]
                 
                 # Check if already resolved
-                val_now = self._extract_filled_value(field)
+                val_now = self._extract_filled_value(field, q_text)
                 err_now = self._field_has_error(field)
-                if val_now and not self._is_placeholder_or_empty(val_now) and not err_now:
+                if val_now and not self._is_placeholder_or_empty(val_now, q_text) and not err_now:
                     logger.info(f"Field '{q_text}' already resolved with '{val_now}'. Skipping human popup.", step="handle_error")
                     continue
 
@@ -1616,7 +1737,7 @@ class SmartFormFiller:
         except:
             pass
     
-    def _extract_filled_value(self, field: Locator) -> str:
+    def _extract_filled_value(self, field: Locator, question_text: str = "") -> str:
         """Extract the value that was filled in the field"""
         try:
             # 0. Check for Education section (profile already contains education)
@@ -1648,7 +1769,7 @@ class SmartFormFiller:
                         pass
                 if val and str(val).strip():
                     val_str = str(val).strip()
-                    if not self._is_placeholder_or_empty(val_str):
+                    if not self._is_placeholder_or_empty(val_str, question_text):
                         return val_str
                 return None
             
@@ -1656,7 +1777,7 @@ class SmartFormFiller:
             textarea = field.locator("textarea").first
             if textarea.count() > 0:
                 val = textarea.input_value()
-                if val and val.strip() and not self._is_placeholder_or_empty(val.strip()):
+                if val and val.strip() and not self._is_placeholder_or_empty(val.strip(), question_text):
                     return val.strip()
                 return None
             
@@ -1675,7 +1796,7 @@ class SmartFormFiller:
                         pass
                 
                 selected_text = (selected_text or "").strip()
-                if selected_text and not self._is_placeholder_or_empty(selected_text):
+                if selected_text and not self._is_placeholder_or_empty(selected_text, question_text):
                     return selected_text
                 return None
             
@@ -1692,42 +1813,82 @@ class SmartFormFiller:
                         pass
 
             if checked_radio.count() > 0:
+                q_clean = (question_text or "").strip().lower()
+
+                def _valid_radio_label(candidate: str) -> str:
+                    if not candidate:
+                        return None
+                    clean = re.sub(r'\s*\*+\s*$', '', candidate).strip()
+                    c_lower = clean.lower()
+                    if c_lower in ["on", "off", "none", "null", "undefined"]:
+                        return None
+                    if q_clean and (c_lower == q_clean or q_clean in c_lower):
+                        return None
+                    if len(clean) > 80:
+                        return None
+                    return clean
+
                 # 4.1 Try associated label via id
                 radio_id = checked_radio.get_attribute("id")
                 if radio_id:
                     try:
                         label = field.locator(f"label[for='{radio_id}']").first
                         if label.count() > 0:
-                            t = label.inner_text().strip()
-                            if t: return re.sub(r'\s*\*+\s*$', '', t).strip()
+                            ans = _valid_radio_label(label.inner_text())
+                            if ans: return ans
                     except:
                         pass
                 # 4.2 Try ancestor label
                 try:
                     parent_lbl = checked_radio.locator("xpath=ancestor::label[1]").first
                     if parent_lbl.count() > 0:
-                        t = parent_lbl.inner_text().strip()
-                        if t: return re.sub(r'\s*\*+\s*$', '', t).strip()
+                        ans = _valid_radio_label(parent_lbl.inner_text())
+                        if ans: return ans
                 except:
                     pass
-                # 4.3 Try parent container text
+                # 4.3 Try sibling label or span
+                try:
+                    sibling = checked_radio.locator("xpath=following-sibling::label | following-sibling::span | preceding-sibling::label").first
+                    if sibling.count() > 0:
+                        ans = _valid_radio_label(sibling.inner_text())
+                        if ans: return ans
+                except:
+                    pass
+                # 4.4 Try parent container text
                 try:
                     parent_wrap = checked_radio.locator("xpath=..").first
                     if parent_wrap.count() > 0:
-                        t = parent_wrap.inner_text().strip()
-                        if t: return re.sub(r'\s*\*+\s*$', '', t).strip()
+                        ans = _valid_radio_label(parent_wrap.inner_text())
+                        if ans: return ans
                 except:
                     pass
-                # 4.4 Try value or aria-label
-                val = checked_radio.get_attribute("value") or checked_radio.get_attribute("aria-label")
-                if val and str(val).strip():
-                    return str(val).strip()
+                # 4.5 Try aria-label or value
+                val = checked_radio.get_attribute("aria-label") or checked_radio.get_attribute("value")
+                ans = _valid_radio_label(val)
+                if ans:
+                    return ans
+
+                # 4.6 Fallback: Infer from radio index in 2-option group (Yes / No)
+                try:
+                    all_radios = field.locator("input[type='radio'], [role='radio']").all()
+                    if len(all_radios) == 2:
+                        for i_r, r in enumerate(all_radios):
+                            if r.is_checked() or r.get_attribute("aria-checked") == "true":
+                                return "Yes" if i_r == 0 else "No"
+                except:
+                    pass
+
                 return "Checked"
             
             # 5. Try Checkbox
-            checkbox = field.locator("input[type='checkbox']").first
+            checkbox = field.locator("input[type='checkbox'], [role='checkbox']").first
             if checkbox.count() > 0:
-                return "Checked" if checkbox.is_checked() else None
+                is_chk = False
+                try:
+                    is_chk = checkbox.is_checked() or checkbox.get_attribute("aria-checked") == "true"
+                except:
+                    pass
+                return "Checked" if is_chk else None
                 
         except:
             pass
@@ -1765,15 +1926,15 @@ class SmartFormFiller:
                         return str(opt).strip()
                 
         # 2. Boolean / Numeric Semantic Equivalence
-        if ans_lower in ["0", "no", "false", "none", "nil", "n/a", "no offer", "not applicable"]:
+        if ans_lower in ["0", "no", "false", "none", "nil", "n/a", "no offer", "not applicable", "off"]:
             for opt in options:
                 opt_l = str(opt).strip().lower()
                 if opt_l in ["no", "0", "false", "none", "n/a", "i do not", "no, i do not", "0 years", "none of the above", "no offer", "0.0"]:
                     return str(opt).strip()
-        elif ans_lower in ["1", "yes", "true"]:
+        elif ans_lower in ["1", "yes", "true", "on", "checked", "agree", "i agree"]:
             for opt in options:
                 opt_l = str(opt).strip().lower()
-                if opt_l in ["yes", "1", "true", "i do", "yes, i do", "1 year", "1+ year", "1.0"]:
+                if opt_l in ["yes", "1", "true", "i do", "yes, i do", "1 year", "1+ year", "1.0", "i agree"]:
                     return str(opt).strip()
 
         # 3. Numeric Range Matching (e.g. answer is "2" or "2 years", options: ["0-1 years", "1-3 years", "3-5 years", "5+ years"])
@@ -1844,9 +2005,9 @@ class SmartFormFiller:
         # 4. Boolean Fields
         if data_type_upper == "BOOLEAN" or field_type == "checkbox":
             ans_l = ans_str.lower()
-            if ans_l in ["0", "no", "false", "none", "nil", "n/a", "no offer"]:
+            if ans_l in ["0", "no", "false", "none", "nil", "n/a", "no offer", "off"]:
                 return "No" if field_type != "checkbox" else "false"
-            elif ans_l in ["1", "yes", "true"]:
+            elif ans_l in ["1", "yes", "true", "on", "checked", "agree", "i agree"]:
                 return "Yes" if field_type != "checkbox" else "true"
             return "Yes" if "yes" in ans_l else ("No" if "no" in ans_l else ans_str)
             
@@ -2164,12 +2325,47 @@ class SmartFormFiller:
                                 continue
                     
             elif field_type == "checkbox":
-                checkbox = field.locator("input[type='checkbox']").first
-                if str(final_value).lower() in ['yes', 'true', '1', 'checked']:
-                    checkbox.check()
-                else:
-                    checkbox.uncheck()
-                logger.debug(f"Checkbox: {final_value}", step="fill_field")
+                checkbox = field.locator("input[type='checkbox'], [role='checkbox']").first
+                if checkbox.count() > 0:
+                    target_str = str(final_value).strip().lower()
+                    should_check = target_str in ['yes', 'true', '1', 'checked', 'on', 'agree', 'i agree']
+                    try:
+                        checkbox.scroll_into_view_if_needed(timeout=1000)
+                    except:
+                        pass
+                        
+                    try:
+                        if should_check:
+                            try:
+                                checkbox.check(force=True, timeout=1500)
+                            except:
+                                pass
+                            checkbox.evaluate("""el => {
+                                el.checked = true;
+                                if (el.setAttribute) el.setAttribute('aria-checked', 'true');
+                                el.dispatchEvent(new Event('click', { bubbles: true }));
+                                el.dispatchEvent(new Event('change', { bubbles: true }));
+                                el.dispatchEvent(new Event('input', { bubbles: true }));
+                            }""")
+                            if not checkbox.is_checked():
+                                parent_lbl = checkbox.locator("xpath=ancestor::label[1] | following-sibling::label | preceding-sibling::label").first
+                                if parent_lbl.count() > 0:
+                                    parent_lbl.click(force=True, timeout=1000)
+                        else:
+                            try:
+                                checkbox.uncheck(force=True, timeout=1500)
+                            except:
+                                pass
+                            checkbox.evaluate("""el => {
+                                el.checked = false;
+                                if (el.setAttribute) el.setAttribute('aria-checked', 'false');
+                                el.dispatchEvent(new Event('click', { bubbles: true }));
+                                el.dispatchEvent(new Event('change', { bubbles: true }));
+                                el.dispatchEvent(new Event('input', { bubbles: true }));
+                            }""")
+                    except Exception as e:
+                        logger.debug(f"Error checking checkbox: {e}", step="fill_field")
+                    logger.info(f"✅ Checkbox {'checked' if should_check else 'unchecked'} for '{target_str}'", step="fill_field")
                 
             elif field_type in ["number", "text", "textarea"] or (data_type in ["INTEGER", "DECIMAL", "NUMBER"]):
                 input_elem = field.locator("input:not([type='hidden']), textarea").first
