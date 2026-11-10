@@ -170,7 +170,34 @@ class SmartFormFiller:
     def _field_has_error(self, field: Locator) -> bool:
         """Check if field has visible error states across classic and modern LinkedIn UIs"""
         try:
-            return field.locator(".artdeco-inline-feedback--error, [data-testid='text-input-helper-text'], [aria-invalid='true'], .fb-form-element--error, [data-test-form-element-error], p:has-text('Invalid input'), p:has-text('Please enter a valid')").count() > 0
+            # 1. Explicit HTML invalid attribute
+            if field.locator("input[aria-invalid='true'], select[aria-invalid='true'], textarea[aria-invalid='true'], [aria-invalid='true']").count() > 0:
+                return True
+
+            # 2. Classic LinkedIn error containers
+            if field.locator(".artdeco-inline-feedback--error, .fb-form-element--error, [data-test-form-element-error]").count() > 0:
+                return True
+
+            # 3. Explicit error text
+            error_text_selectors = [
+                "p:has-text('Invalid input')",
+                "p:has-text('Please enter a valid')",
+                "p:has-text('Please enter a whole number')",
+                "p:has-text('Please make a selection')",
+                "p:has-text('Please enter between')",
+                "[data-testid='text-input-helper-text']:has-text('Invalid')",
+                "[data-testid='text-input-helper-text']:has-text('valid')",
+                "[data-testid='text-input-helper-text']:has-text('required')",
+                "span:has-text('Invalid input')"
+            ]
+            for sel in error_text_selectors:
+                try:
+                    if field.locator(sel).count() > 0:
+                        return True
+                except:
+                    continue
+
+            return False
         except:
             return False
 
@@ -461,9 +488,9 @@ class SmartFormFiller:
             except:
                 pass
 
-            # 1. Skip if already filled, UNLESS force_refill is True or field has an error
+            # 1. Skip if already filled, UNLESS field has an active error
             existing_value = self._extract_filled_value(field)
-            if existing_value and str(existing_value).strip() and not force_refill and not has_error:
+            if existing_value and str(existing_value).strip() and not has_error:
                 logger.info(f"Field {field_num}: '{question_text}' already has value. Skipping.", step="process_field")
                 return "skipped_filled"
 
@@ -1443,11 +1470,21 @@ class SmartFormFiller:
                     return "Resume Selected"
                 return "File Field"
 
-            # 1. Try Text Input/Email/Tel
-            input_elem = field.locator("input[type='text'], input[type='email'], input[type='tel'], input[type='number']").first
+            # 1. Try any text/email/tel/number input
+            input_elem = field.locator("input:not([type='hidden']):not([type='file']):not([type='checkbox']):not([type='radio'])").first
             if input_elem.count() > 0:
-                val = input_elem.input_value()
-                if val and val.strip(): return val.strip()
+                try:
+                    val = input_elem.input_value()
+                    if val and str(val).strip():
+                        return str(val).strip()
+                except:
+                    pass
+                try:
+                    val = input_elem.get_attribute("value")
+                    if val and str(val).strip():
+                        return str(val).strip()
+                except:
+                    pass
             
             # 2. Try Textarea
             textarea = field.locator("textarea").first

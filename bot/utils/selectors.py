@@ -17,8 +17,8 @@ LOCATORS = {
         "fallback": "dialog button:has-text('Submit'):not(:has-text('Add')), button:has-text('Submit application'):not(:has-text('Add')), button:has-text('Submit'):not(:has-text('Add')), button[type='submit']:has-text('Submit'):not(:has-text('Add'))"
     },
     "error": {
-        "primary": ".artdeco-inline-feedback--error, [data-testid='text-input-helper-text'], [aria-invalid='true'], p:has-text('Invalid input'), p:has-text('Please enter a valid'), .jobs-easy-apply-form-element--error",
-        "fallback": "[data-test-form-element-error-message], .fb-form-element--error, span:has-text('Invalid input')"
+        "primary": ".artdeco-inline-feedback--error, [aria-invalid='true'], p:has-text('Invalid input'), p:has-text('Please enter a valid'), p:has-text('Please enter a whole number'), [data-testid='text-input-helper-text']:has-text('Invalid'), [data-testid='text-input-helper-text']:has-text('valid'), .jobs-easy-apply-form-element--error",
+        "fallback": "[data-test-form-element-error-message], .fb-form-element--error, span:has-text('Invalid input'), p:has-text('Required')"
     },
     
     "upload_resume": {
