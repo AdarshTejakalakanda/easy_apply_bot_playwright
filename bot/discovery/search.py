@@ -180,7 +180,7 @@ class Search:
                     logger.info(f"🎯 LLM Approved job {job_id}: '{job_title}' at '{company}' (Score: {match_score:.2f}) - {reason}", step="job_screening")
                     
                     # Check if previous modal is still open before interacting with background elements
-                    if self.is_present(".jobs-easy-apply-modal"):
+                    if hasattr(self.workflow, "is_modal_open") and self.workflow.is_modal_open():
                         if self.workflow._verify_submission():
                             self.workflow.close_modal(is_submitted=True)
                         else:
@@ -195,17 +195,24 @@ class Search:
                             link.scroll_into_view_if_needed(timeout=1000)
                         except Exception:
                             pass
-                        try:
-                            link.click(timeout=3000)
-                        except Exception:
+                        card_clicked = False
+                        for title_sel in ["a[href*='/jobs/view/']", "a[href*='currentJobId=']", "[data-view-name='job-card-title']", "a.job-card-list__title", "a"]:
                             try:
-                                link.click(timeout=3000, force=True)
+                                title_elem = link.locator(title_sel).first
+                                if title_elem.count() > 0 and title_elem.is_visible():
+                                    title_elem.click(timeout=2000)
+                                    card_clicked = True
+                                    break
+                            except Exception:
+                                continue
+                        if not card_clicked:
+                            try:
+                                link.click(timeout=2000)
                             except Exception:
                                 link.evaluate("el => el.click()")
-                        time.sleep(1.5)
+                        time.sleep(2)
                     except Exception as click_err:
                         logger.warning(f"Could not click job card: {click_err}", step="job_search")
-                        
                     self.workflow.apply_to_job(job_id, self.phone_number)
                     scroll_tracker.add_job(job_id)
                 

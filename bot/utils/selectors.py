@@ -3,22 +3,22 @@
 #project-bot-easy-apply-python-playwright\bot\utils\selectors.py
 LOCATORS = {
     "next": {
-        "primary": "button[aria-label='Continue to next step'], button[aria-label*='next step'], button[aria-label*='Continue'], footer button.artdeco-button--primary:has-text('Next'), footer button.artdeco-button--primary:has-text('Continue')",
-        "fallback": "button.artdeco-button--primary:has-text('Next'), button.artdeco-button--primary:has-text('Continue'), //button[contains(., 'Next') or contains(., 'Continue')]"
+        "primary": "dialog[open] button:has-text('Next'), dialog[data-testid='dialog'] button:has-text('Next'), dialog button:has-text('Next'), div[role='dialog'] button:has-text('Next'), .jobs-easy-apply-modal button:has-text('Next'), .artdeco-modal button:has-text('Next'), .artdeco-modal__actionbar button:has-text('Next'), button[aria-label*='next step'], button[aria-label*='Continue to next step'], button.artdeco-button--primary:has-text('Next'), button.artdeco-button--primary:has-text('Continue')",
+        "fallback": "dialog button:has-text('Next'):not(:has-text('Add')), button:has-text('Next'):not(:has-text('Add')), button:has-text('Continue'):not(:has-text('Add')), button[aria-label*='Next']:not(:has-text('Add'))"
     },
     
     "review": {
-        "primary": "button[aria-label='Review your application'], button[aria-label*='Review'], footer button.artdeco-button--primary:has-text('Review')",
-        "fallback": "button.artdeco-button--primary:has-text('Review'), //button[contains(., 'Review')]"
+        "primary": "dialog[open] button:has-text('Review'), dialog[data-testid='dialog'] button:has-text('Review'), dialog button:has-text('Review'), div[role='dialog'] button:has-text('Review'), .jobs-easy-apply-modal button:has-text('Review'), .artdeco-modal button:has-text('Review'), .artdeco-modal__actionbar button:has-text('Review'), button[aria-label*='Review your application'], button.artdeco-button--primary:has-text('Review')",
+        "fallback": "dialog button:has-text('Review'):not(:has-text('Add')), button:has-text('Review'):not(:has-text('Add')), button[aria-label*='Review']:not(:has-text('Add'))"
     },
     
     "submit": {
-        "primary": "button[aria-label='Submit application'], button[aria-label*='Submit application'], button[aria-label*='Submit your application'], footer button.artdeco-button--primary:has-text('Submit')",
-        "fallback": "button.artdeco-button--primary:has-text('Submit'), button[type='submit']:has-text('Submit'), //button[contains(., 'Submit')]"
+        "primary": "dialog[open] button:has-text('Submit'), dialog[data-testid='dialog'] button:has-text('Submit'), dialog button:has-text('Submit'), dialog button[aria-label*='Submit'], button[aria-label*='Submit application'], button:has-text('Submit application'), div[role='dialog'] button:has-text('Submit'), .jobs-easy-apply-modal button:has-text('Submit'), .artdeco-modal button:has-text('Submit'), .artdeco-modal__actionbar button:has-text('Submit'), button.artdeco-button--primary:has-text('Submit')",
+        "fallback": "dialog button:has-text('Submit'):not(:has-text('Add')), button:has-text('Submit application'):not(:has-text('Add')), button:has-text('Submit'):not(:has-text('Add')), button[type='submit']:has-text('Submit'):not(:has-text('Add'))"
     },
     "error": {
-        "primary": ".artdeco-inline-feedback--error",
-        "fallback": ".jobs-easy-apply-form-element--error, [data-test-form-element-error-message]"
+        "primary": ".artdeco-inline-feedback--error, [data-testid='text-input-helper-text'], [aria-invalid='true'], p:has-text('Invalid input'), p:has-text('Please enter a valid'), .jobs-easy-apply-form-element--error",
+        "fallback": "[data-test-form-element-error-message], .fb-form-element--error, span:has-text('Invalid input')"
     },
     
     "upload_resume": {
@@ -42,13 +42,13 @@ LOCATORS = {
     },
     
     "search": {
-        "primary": ".jobs-search-results-list",
-        "fallback": ".jobs-search-results__list"
+        "primary": "div[data-testid='lazy-column'], .jobs-search-results-list, .scaffold-layout__list, .scaffold-layout__list-detail-inner",
+        "fallback": ".jobs-search-results__list, ul.scaffold-layout__list-container"
     },
     
     "links": {
-        "primary": "div.job-card-container",
-        "fallback": "li.jobs-search-results__list-item, div.scaffold-layout__list-item"
+        "primary": "div[role='button'][componentkey^='job-card-component-ref-'], div[componentkey^='job-card-component-ref-'], li[data-occludable-job-id], div.job-card-container",
+        "fallback": "li.jobs-search-results__list-item, li.scaffold-layout__list-item, div.scaffold-layout__list-item, ul.scaffold-layout__list-container > li"
     },
     
     "fields": {
@@ -77,8 +77,13 @@ LOCATORS = {
     },
     
     "easy_apply_button": {
-        "primary": "#jobs-apply-button-id, button#jobs-apply-button-id, button.jobs-apply-button",
-        "fallback": "button.jobs-apply-button, button[aria-label*='LinkedIn Apply to'], button[aria-label*='Apply to'], button[aria-label*='Easy Apply'], button[aria-label*='Continue applying']"
+        "primary": ".jobs-search__job-details button.jobs-apply-button, .jobs-search__job-details button[aria-label*='Easy Apply'], button[aria-label='Easy Apply to this job'], button[aria-label*='Easy Apply'], #jobs-apply-button-id, button#jobs-apply-button-id, button.jobs-apply-button, button:has-text('Easy Apply')",
+        "fallback": "button[aria-label*='LinkedIn Apply to'], button[aria-label*='Apply to'], button[aria-label*='Continue applying'], button:has-text('Apply')"
+    },
+
+    "modal": {
+        "primary": "dialog[open], dialog[data-testid='dialog'], dialog, .jobs-easy-apply-modal, .jobs-easy-apply-modal__content, .artdeco-modal__content, div[data-test-easy-apply-form-container], div[data-test-modal], div.artdeco-modal[role='dialog'], div[role='dialog']:has(.jobs-easy-apply-form-section__grouping), div[role='dialog']:has-text('Easy Apply')",
+        "fallback": "dialog[open], dialog[data-testid='dialog'], dialog, div.artdeco-modal, div[role='dialog']"
     }
 }
 
@@ -98,14 +103,12 @@ def get_locator(key: str, use_fallback: bool = False):
     
     if not locator:
         return None
-    
-    # If it's a dict with primary/fallback
+        
     if isinstance(locator, dict):
         if use_fallback and "fallback" in locator:
             return locator["fallback"]
-        return locator.get("primary", locator.get("fallback"))
+        return locator.get("primary", "")
     
-    # Legacy format (direct string)
     return locator
 
 

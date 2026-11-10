@@ -30,6 +30,12 @@ class StructuredFormatter(logging.Formatter):
 
 class StructuredLogger:
     def __init__(self, name="bot"):
+        if sys.platform == "win32":
+            try:
+                if hasattr(sys.stdout, 'reconfigure'):
+                    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+            except Exception:
+                pass
         self.logger = logging.getLogger(name)
         self.logger.setLevel(logging.DEBUG)
         self.logger.propagate = False

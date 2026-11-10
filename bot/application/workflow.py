@@ -39,13 +39,7 @@ class Workflow:
         self.metrics = metrics
 
     def _safe_click(self, element, timeout_ms: int = 3000) -> bool:
-        """
-        Resilient multi-tier click to bypass pointer event interception, overlays, and animations:
-        1. Scroll into view
-        2. Normal Playwright click with short timeout
-        3. Force Playwright click
-        4. Direct JavaScript DOM click (el.click())
-        """
+        """Resilient multi-tier click with hover and force options"""
         if not element:
             return False
         try:
@@ -53,29 +47,63 @@ class Workflow:
                 element.scroll_into_view_if_needed(timeout=1000)
             except Exception:
                 pass
-                
+            try:
+                element.hover(timeout=1000)
+            except Exception:
+                pass
             try:
                 element.click(timeout=timeout_ms)
                 return True
             except Exception:
                 pass
-                
             try:
                 element.click(timeout=timeout_ms, force=True)
                 return True
             except Exception:
                 pass
-                
             try:
                 element.evaluate("el => el.click()")
                 return True
             except Exception:
                 pass
-                
             return False
         except Exception as e:
             logger.debug(f"Safe click error: {e}")
             return False
+    def is_modal_open(self) -> bool:
+        """Check if an Easy Apply modal or application dialog is currently visible on screen"""
+        modal_content_selectors = [
+            "dialog[open]",
+            "dialog[data-testid='dialog']",
+            "dialog",
+            ".jobs-easy-apply-modal__content",
+            ".artdeco-modal__content",
+            "div[data-test-easy-apply-form-container]",
+            ".jobs-easy-apply-modal",
+            "div[data-test-modal]",
+            ".artdeco-modal",
+            "div[role='dialog']"
+        ]
+        for sel in modal_content_selectors:
+            try:
+                loc = self.page.locator(sel)
+                for elem in loc.all():
+                    try:
+                        if elem.is_visible():
+                            return True
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+        try:
+            fields = self.page.locator(".jobs-easy-apply-form-section__grouping, .fb-dash-form-element, .jobs-easy-apply-form-element, [data-test-form-builder-component]")
+            if fields.count() > 0:
+                for f in fields.all():
+                    if f.is_visible():
+                        return True
+        except Exception:
+            pass
+        return False
 
     def apply_to_job(self, jobID, phone_number):
         if self.metrics:
@@ -87,7 +115,7 @@ class Workflow:
             return False
 
         # If an application modal is already open on screen, check if finished or continue filling it
-        if self.is_present(".jobs-easy-apply-modal"):
+        if self.is_modal_open():
             if self._verify_submission(jobID):
                 self.close_modal(is_submitted=True)
             else:
@@ -138,16 +166,42 @@ class Workflow:
                     
                     self._safe_click(button)
                     logger.debug("Waiting for modal to open...", job_id=jobID, step="apply")
-                    time.sleep(2)  # Wait for modal to fully open
-                    
-                    # Form filling happens inside send_resume now
-                    result = self.send_resume(jobID, start_time)
-
-                    if result:
-                        string_easy = "*Applied: Sent Resume"
+                    # Resilient wait for modal to appear
+                    modal_opened = False
+                    for _ in range(12):
+                        time.sleep(0.5)
+                        if self.is_modal_open():
+                            modal_opened = True
+                            break
+                    if not modal_opened:
+                        logger.debug("Retrying click on Easy Apply button...", job_id=jobID, step="apply")
+                        try:
+                            button.click(force=True, timeout=2000)
+                        except Exception:
+                            self._safe_click(button)
+                        for _ in range(8):
+                            time.sleep(0.5)
+                            if self.is_modal_open():
+                                modal_opened = True
+                                break
+                    if not modal_opened:
+                        try:
+                            self.page.screenshot(path="debug_modal_failed.png")
+                            with open("debug_modal_failed.html", "w", encoding="utf-8") as df:
+                                df.write(self.page.content())
+                            logger.info("Saved debug_modal_failed.png and debug_modal_failed.html", job_id=jobID, step="apply")
+                        except Exception:
+                            pass
+                        logger.warning("⚠️ Easy Apply modal did not appear after clicking button. Skipping job.", job_id=jobID, step="apply")
+                        result = False
+                        string_easy = "*Modal failed to open"
                     else:
-                        string_easy = "*Did not apply: Failed to send Resume"
-                        
+                        logger.info("✅ Easy Apply modal opened successfully", job_id=jobID, step="apply")
+                        result = self.send_resume(jobID, start_time)
+                        if result:
+                            string_easy = "*Applied: Sent Resume"
+                        else:
+                            string_easy = "*Did not apply: Failed to send Resume"
                 except Exception as e:
                     logger.error(f"Error during application: {e}", job_id=jobID, step="apply", exception=e)
                     result = False
@@ -334,17 +388,35 @@ class Workflow:
 
     @retry(max_attempts=3, delay=1)
     def get_job_page(self, jobID):
-        """
-        Don't navigate to full job page - LinkedIn hides Easy Apply button there!
-        Instead, just ensure the job card is clicked to show preview panel on right.
-        The job card should already be clicked by search.py, so we just wait a bit.
-        """
-        import time
-        logger.debug(f"Waiting for job preview panel to load for job {jobID}", step="get_job_page")
-        time.sleep(0.5)  # Minimal wait - card already clicked in search.py
-        # Stay on search results page - Easy Apply button is in the preview panel!
-
-    @retry(max_attempts=3, delay=1)
+        """Ensure preview panel is loaded for jobID by verifying and clicking the job card"""
+        try:
+            current_url = self.page.url
+            if f'currentJobId={jobID}' in current_url:
+                logger.debug(f'Preview panel already loaded for job {jobID}', step='get_job_page')
+                return
+            logger.debug(f'Ensuring preview panel is loaded for job {jobID}', step='get_job_page')
+            card_selectors = [
+                f"div[componentkey='job-card-component-ref-{jobID}']",
+                f"[componentkey*='{jobID}']",
+                f"li[data-occludable-job-id*='{jobID}']",
+                f"[data-job-id='{jobID}']"
+            ]
+            for c_sel in card_selectors:
+                try:
+                    card = self.page.locator(c_sel).first
+                    if card.count() > 0:
+                        card.scroll_into_view_if_needed(timeout=1000)
+                        title_link = card.locator("a[href*='/jobs/view/'], a[href*='currentJobId='], [data-view-name='job-card-title'], a").first
+                        if title_link.count() > 0 and title_link.is_visible():
+                            title_link.click(timeout=2000)
+                        else:
+                            card.click(timeout=2000)
+                        time.sleep(1.5)
+                        break
+                except Exception:
+                    continue
+        except Exception as e:
+            logger.debug(f'get_job_page note: {e}', step='get_job_page')
     def get_easy_apply_button(self):
         """
         Find and return the Easy Apply button in the preview panel
@@ -354,7 +426,7 @@ class Workflow:
             # Wait for preview panel to load
             import time
             logger.debug("Waiting for preview panel with Easy Apply button...", step="get_button")
-            time.sleep(5)  # Wait for preview panel to fully load
+            time.sleep(1.5)  # Let preview panel settle
             
             # Debug: Count all buttons on page
             try:
@@ -443,14 +515,18 @@ class Workflow:
             return False
 
     def get_elements(self, type) -> list:
-        """
-        Get elements by type from locators
-        """
-        selector = get_locator(type)
-        if selector and self.is_present(selector):
-            return self.page.locator(selector).all()
+        """Get visible elements by type checking primary and fallback locators"""
+        for use_fb in [False, True]:
+            selector = get_locator(type, use_fallback=use_fb)
+            if selector and self.is_present(selector):
+                try:
+                    found = self.page.locator(selector).all()
+                    visible = [el for el in found if el.is_visible()]
+                    if visible:
+                        return visible
+                except Exception:
+                    continue
         return []
-
     def is_present(self, selector):
         """
         Check if element is present on page
@@ -485,14 +561,27 @@ class Workflow:
             loop = 0
             form_pages = 0
             candidate_id = self.candidate_profile.get('name', 'default') if self.candidate_profile else 'default'
+            if not self.is_modal_open():
+                logger.warning("⚠️ Application modal is not open, aborting send_resume.", job_id=jobID, step="apply_loop")
+                return False
             while loop < 40:  # Multi-page resilient loop
                 time.sleep(1)
                 
+                # Auto-cancel any open "Add education" / "Add experience" blank subforms to prevent form blocking
+                try:
+                    edu_cancel = self.page.locator(".jobs-easy-apply-form-section__grouping button:has-text('Cancel'), .jobs-easy-apply-modal__content button[aria-label*='Cancel'], .jobs-easy-apply-modal__content button:has-text('Cancel')").first
+                    if edu_cancel.count() > 0 and edu_cancel.is_visible():
+                        logger.info("Dismissing open Add Education/Experience subform via Cancel button to preserve profile data", job_id=jobID, step="education")
+                        self._safe_click(edu_cancel)
+                        time.sleep(1)
+                except Exception as e:
+                    logger.debug(f"Check cancel button note: {e}")
+
                 # Handle Document Upload Redesign Cards
                 try:
-                    resume_cards = self.page.locator(".jobs-document-upload-redesign-card__container").all()
+                    resume_cards = self.page.locator(".jobs-document-upload-redesign-card__container, [data-test-document-upload-card], div[class*='jobs-document-upload-card']").all()
                     if resume_cards:
-                        selected_cards = self.page.locator(".jobs-document-upload-redesign-card__container--selected, .jobs-document-upload-redesign-card__container[aria-label='Selected']").all()
+                        selected_cards = self.page.locator(".jobs-document-upload-redesign-card__container--selected, .jobs-document-upload-redesign-card__container[aria-label='Selected'], [aria-checked='true'], [aria-label*='Selected']").all()
                         if not selected_cards:
                             logger.info("Selecting first available resume card from redesign UI...", job_id=jobID, step="upload_resume")
                             self._safe_click(resume_cards[0])
@@ -598,13 +687,13 @@ class Workflow:
                         # Try to verify LinkedIn accepted it
                         linkedin_verified = False
                         try:
-                            if not self.is_present(".jobs-easy-apply-modal"):
+                            if not self.is_present(".jobs-easy-apply-modal") and not self.is_present("dialog[open]"):
                                 linkedin_verified = True
-                            elif not self.is_present("button[aria-label='Submit application']"):
+                            elif not self.is_present("button[aria-label='Submit application']") and not self.is_present("dialog button:has-text('Submit')"):
                                 linkedin_verified = True
-                            elif self.is_present(".artdeco-modal__content"):
-                                content = self.page.locator(".artdeco-modal__content").first.text_content(timeout=2000)
-                                if "application" in content.lower() and "sent" in content.lower():
+                            elif self.is_present("dialog") or self.is_present(".artdeco-modal__content"):
+                                content = (self.page.locator("dialog, .artdeco-modal__content").first.text_content(timeout=2000) or "").lower()
+                                if any(w in content for w in ["sent", "submitted", "received", "thank"]):
                                     linkedin_verified = True
                         except:
                             pass
@@ -631,42 +720,69 @@ class Workflow:
                     if submitted:
                         break
 
-                # Check for errors or unfilled required fields
-                elif self.has_visible_errors() or (hasattr(self.form_filler, 'has_unfilled_fields') and self.form_filler.has_unfilled_fields()):
-                    logger.warning("⚠️ Form contains unfilled fields or validation errors. Running auto-fill sweep...", job_id=jobID, step="form_error")
-                    
-                    if hasattr(self.form_filler, 'fill_all_fields'):
-                        self.form_filler.fill_all_fields(force_refill=True)
-                    
-                    time.sleep(1)
-                    
-                    if self.has_visible_errors() or (hasattr(self.form_filler, 'has_unfilled_fields') and self.form_filler.has_unfilled_fields()):
-                        logger.warning("🤔 Form still has missing/errored fields - Triggering On-Screen Popup for resolution...", 
-                                       job_id=jobID, step="human_fix")
+                # Check for review button (before next button)
+                elif len(self.get_elements("review")) > 0:
+                    if self.has_visible_errors():
+                        logger.warning("⚠️ Form errors before Review click - Resolving...", job_id=jobID, step="review")
                         if hasattr(self.form_filler, 'handle_errored_fields'):
                             self.form_filler.handle_errored_fields()
-                        time.sleep(1)
-                    
-                    continue
+
+                    elements = self.get_elements("review")
+                    for element in elements:
+                        # Safety filter: NEVER click "Add" buttons
+                        try:
+                            btn_text = (element.text_content() or "").strip().lower()
+                            aria_label = (element.get_attribute("aria-label") or "").strip().lower()
+                            if "add" in btn_text or "add" in aria_label:
+                                logger.debug(f"Skipping Add button: text='{btn_text}', aria='{aria_label}'", step="review")
+                                continue
+                        except Exception:
+                            pass
+                            
+                        element.wait_for(state="visible", timeout=5000)
+                        self._safe_click(element)
+                        time.sleep(1.5)
+
+                        # Check if LinkedIn highlighted unfilled required fields after clicking Review
+                        if self.has_visible_errors():
+                            logger.warning("⚠️ Validation errors triggered after Review click - Resolving...", job_id=jobID, step="review")
+                            if hasattr(self.form_filler, 'handle_errored_fields'):
+                                self.form_filler.handle_errored_fields()
+                        else:
+                            form_pages += 1
+                            logger.info(f"Clicked Review button (page {form_pages})", job_id=jobID, step="review")
+                        break
 
                 # Check for next button
                 elif len(self.get_elements("next")) > 0:
+                    if self.has_visible_errors():
+                        logger.warning("⚠️ Form errors before Next click - Resolving...", job_id=jobID, step="next")
+                        if hasattr(self.form_filler, 'handle_errored_fields'):
+                            self.form_filler.handle_errored_fields()
+
                     elements = self.get_elements("next")
                     for element in elements:
+                        # Safety filter: NEVER click "Add", "Add more", "Add education", or "Add degree" buttons
+                        try:
+                            btn_text = (element.text_content() or "").strip().lower()
+                            aria_label = (element.get_attribute("aria-label") or "").strip().lower()
+                            if "add" in btn_text or "add" in aria_label:
+                                logger.debug(f"Skipping Add button: text='{btn_text}', aria='{aria_label}'", step="next")
+                                continue
+                        except Exception:
+                            pass
+                            
                         element.wait_for(state="visible", timeout=5000)
                         self._safe_click(element)
                         form_pages += 1
                         logger.info(f"Clicked Next button (page {form_pages})", job_id=jobID, step="next")
-                        break
+                        time.sleep(1.5)
 
-                # Check for review button
-                elif len(self.get_elements("review")) > 0:
-                    elements = self.get_elements("review")
-                    for element in elements:
-                        element.wait_for(state="visible", timeout=5000)
-                        self._safe_click(element)
-                        form_pages += 1
-                        logger.info(f"Clicked Review button (page {form_pages})", job_id=jobID, step="review")
+                        # Check if LinkedIn highlighted unfilled required fields after clicking Next
+                        if self.has_visible_errors():
+                            logger.warning("⚠️ Validation errors triggered after Next click - Resolving...", job_id=jobID, step="next")
+                            if hasattr(self.form_filler, 'handle_errored_fields'):
+                                self.form_filler.handle_errored_fields()
                         break
 
                 # Check for follow button
@@ -679,15 +795,46 @@ class Workflow:
                         break
                 
                 else:
+                    # Check direct text fallback for Submit / Review / Next buttons inside modal
+                    try:
+                        modal_box = self.page.locator("dialog[open], dialog[data-testid='dialog'], dialog, .jobs-easy-apply-modal, .artdeco-modal, div[role='dialog']").first
+                        modal_submit = modal_box.locator("button").filter(has_text=re.compile(r"Submit", re.I)).first
+                        modal_review = modal_box.locator("button").filter(has_text=re.compile(r"Review", re.I)).first
+                        modal_next = modal_box.locator("button").filter(has_text=re.compile(r"Next|Continue", re.I)).first
+                        
+                        if modal_submit.count() > 0 and modal_submit.is_visible():
+                            logger.info("Found Submit button via modal fallback, clicking...", job_id=jobID, step="submit")
+                            self._safe_click(modal_submit)
+                            submitted = True
+                            time.sleep(2)
+                            break
+                        elif modal_review.count() > 0 and modal_review.is_visible():
+                            self._safe_click(modal_review)
+                            form_pages += 1
+                            logger.info(f"Clicked Review button via modal text fallback (page {form_pages})", job_id=jobID, step="review")
+                            time.sleep(1.5)
+                            continue
+                        elif modal_next.count() > 0 and modal_next.is_visible():
+                            self._safe_click(modal_next)
+                            form_pages += 1
+                            logger.info(f"Clicked Next button via modal text fallback (page {form_pages})", job_id=jobID, step="next")
+                            time.sleep(1.5)
+                            continue
+                    except Exception:
+                        pass
+
                     # No buttons found - check if complete or stuck
                     logger.warning(f"⚠️ No Next/Review/Submit buttons found (loop {loop})", job_id=jobID, step="no_action")
-                    
-                    if not self.is_present(".jobs-easy-apply-modal"):
-                        logger.info("Modal closed - application complete", job_id=jobID, step="complete")
-                        submitted = True
+                    if not self.is_modal_open():
+                        if self._verify_submission(jobID):
+                            logger.info("Modal closed with verified submission", job_id=jobID, step="complete")
+                            submitted = True
+                        else:
+                            logger.warning("Modal closed or dismissed without confirmed submission", job_id=jobID, step="incomplete")
+                            submitted = False
                         break
                     
-                    if self.is_present(".jobs-easy-apply-form-section__grouping") or self.is_present("fieldset.fb-form-element"):
+                    if self.is_present(".jobs-easy-apply-form-section__grouping, fieldset, div[data-test-form-builder-component]"):
                         logger.warning("Form fields present but progression stuck - attempting field refill...", job_id=jobID)
                         if hasattr(self.form_filler, 'fill_all_fields'):
                             self.form_filler.fill_all_fields(force_refill=True)
@@ -700,7 +847,7 @@ class Workflow:
                     logger.info(f"Application loop iteration {loop}/40", job_id=jobID, step="progress")
 
             # Final check before concluding: If modal is still open, prompt human instead of failing/discarding
-            if not submitted and self.is_present(".jobs-easy-apply-modal"):
+            if not submitted and self.is_modal_open():
                 logger.warning("⚠️ Application modal still open - Zero-Discard Policy: Prompting user to complete in browser...", job_id=jobID)
                 from bot.utils.human_popup import prompt_human_with_popup
                 prompt_human_with_popup(
@@ -711,7 +858,7 @@ class Workflow:
                     suggested_answer="Completed"
                 )
                 time.sleep(3)
-                if not self.is_present(".jobs-easy-apply-modal") or self._verify_submission(jobID):
+                if self._verify_submission(jobID) or not self.is_modal_open():
                     submitted = True
 
             if not submitted:
@@ -775,16 +922,14 @@ class Workflow:
         """Thoroughly check if the application was actually sent"""
         try:
             success_confirmations = ["sent", "successfully", "done", "submitted", "received", "thanks", "application sent", "your application was sent"]
-            if self.is_present(".artdeco-modal__content"):
-                content = self.page.locator(".artdeco-modal__content").first.text_content(timeout=3000).lower()
+            if self.is_present("dialog") or self.is_present(".artdeco-modal__content"):
+                content = (self.page.locator("dialog, .artdeco-modal__content").first.text_content(timeout=3000) or "").lower()
                 if any(word in content for word in success_confirmations):
                     return True
 
-            if self.is_present("h2:has-text('Application sent')") or self.is_present("h2:has-text('successfully')") or self.is_present("h3:has-text('Application sent')"):
+            if self.is_present("h2:has-text('Application sent')") or self.is_present("h2:has-text('successfully')") or self.is_present("h3:has-text('Application sent')") or self.is_present("*:has-text('Application sent')"):
                 return True
 
-            if not self.is_present(".jobs-easy-apply-modal") and not self.is_present(get_locator("error")):
-                return True
 
             return False
         except:

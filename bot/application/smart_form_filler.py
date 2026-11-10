@@ -72,7 +72,7 @@ class SmartFormFiller:
     def _scroll_modal_content(self):
         """Scroll down and up the Easy Apply modal dialog to trigger lazy-rendering of all field components"""
         try:
-            modal_content = self.page.locator(".jobs-easy-apply-modal__content, .artdeco-modal__content, div[data-test-easy-apply-form-container]").first
+            modal_content = self.page.locator("dialog[open], dialog[data-testid='dialog'], dialog, .jobs-easy-apply-modal__content, .artdeco-modal__content, div[data-test-easy-apply-form-container]").first
             if modal_content.count() > 0:
                 # Scroll to bottom
                 modal_content.evaluate("el => el.scrollTo({top: el.scrollHeight, behavior: 'smooth'})")
@@ -84,29 +84,118 @@ class SmartFormFiller:
             pass
 
     def _get_form_fields(self):
-        """Find all form field elements on current page"""
+        """Find all form field elements on current page (strictly scoped to active modal dialog)"""
         try:
-            return self.page.locator(".jobs-easy-apply-form-section__grouping, .fb-dash-form-element, div[data-test-form-builder-component], .jobs-easy-apply-form-element, fieldset.fb-form-element").all()
+            modal = self.page.locator("dialog[open], dialog[data-testid='dialog'], dialog, .jobs-easy-apply-modal, .artdeco-modal, div[role='dialog'], div[data-test-easy-apply-form-container]").first
+            if modal.count() == 0:
+                logger.debug("No modal dialog container present on page", step="form_fields")
+                return []
+
+            search_root = modal
+
+            grouping_selectors = (
+                "div[componentkey^='easyApplyFieldFocus'], "
+                ".jobs-easy-apply-form-section__grouping, "
+                ".fb-dash-form-element, "
+                "div[data-test-form-builder-component], "
+                ".jobs-easy-apply-form-element, "
+                "fieldset.fb-form-element, "
+                "fieldset, "
+                "div[data-test-form-element], "
+                "div[data-test-single-typeahead-entity-form-component], "
+                "div[data-test-text-entity-list-form-component], "
+                "div[data-test-checkbox-form-component], "
+                "div[data-test-radio-form-component]"
+            )
+            raw_fields = search_root.locator(grouping_selectors).all()
+
+            # Guaranteed Control-Driven Discovery: Walk up from all visible, editable inputs
+            controls = search_root.locator("input:not([type='hidden']):not([type='file']), select, textarea").all()
+            if controls:
+                control_fields = []
+                for ctrl in controls:
+                    try:
+                        if not ctrl.is_visible():
+                            continue
+                        # Never touch background search bars or navigation inputs
+                        comp_key = (ctrl.get_attribute("componentkey") or "").lower()
+                        placeholder = (ctrl.get_attribute("placeholder") or "").lower()
+                        if "semanticsearchbox" in comp_key or "describe the job you want" in placeholder:
+                            continue
+                        # Find the enclosing question container that holds label/question text
+                        container = ctrl.locator("xpath=ancestor::div[p or label or legend or h3 or h4 or @componentkey][last()]").first
+                        if container.count() > 0:
+                            control_fields.append(container)
+                        else:
+                            control_fields.append(ctrl.locator("xpath=..").first)
+                    except Exception:
+                        control_fields.append(ctrl)
+                raw_fields = raw_fields + control_fields
+            filtered = []
+            seen_ctrl_ids = set()
+            for f in raw_fields:
+                try:
+                    # Skip if it is a Resume / Document upload card or file section (handled by workflow)
+                    if self._is_resume_or_file_section(f):
+                        continue
+
+                    # An element MUST have at least one editable control
+                    ctrl = f.locator("input:not([type='file']), select, textarea").first
+                    if ctrl.count() == 0:
+                        continue
+                        
+                    # Skip if it is an Education or Work Experience card section
+                    if self._is_education_section(f) or self._is_work_experience_section(f):
+                        continue
+                        
+                    # Skip any element that contains an Add button and has no real inputs
+                    if f.locator("button:has-text('Add'), button[aria-label*='Add'], button:has-text('add')").count() > 0:
+                        if f.locator("input:not([type='hidden']), select, textarea").count() == 0:
+                            continue
+
+                    ctrl_key = ctrl.get_attribute("id") or ctrl.get_attribute("name") or ctrl.get_attribute("aria-label") or f.element_handle()
+                    if ctrl_key:
+                        if ctrl_key in seen_ctrl_ids:
+                            continue
+                        seen_ctrl_ids.add(ctrl_key)
+
+                    filtered.append(f)
+                except Exception:
+                    filtered.append(f)
+            return filtered
         except Exception as e:
             logger.debug(f"Error querying form fields: {e}", step="fill_fields")
             return []
 
+    def _field_has_error(self, field: Locator) -> bool:
+        """Check if field has visible error states across classic and modern LinkedIn UIs"""
+        try:
+            return field.locator(".artdeco-inline-feedback--error, [data-testid='text-input-helper-text'], [aria-invalid='true'], .fb-form-element--error, [data-test-form-element-error], p:has-text('Invalid input'), p:has-text('Please enter a valid')").count() > 0
+        except:
+            return False
+
     def has_unfilled_fields(self) -> bool:
-        """Check if any fields on current page are still empty or marked with validation error"""
+        """Check if any fields on current page are still empty or marked with validation error (strictly required fields only)"""
         try:
             fields = self._get_form_fields()
             for field in fields:
                 field_type = self._detect_field_type(field)
-                if field_type == "file":
+                if field_type in ["file", "education_section", "work_experience_section", "button_container"]:
                     continue
-                val = self._extract_filled_value(field)
-                if not val or not str(val).strip():
-                    is_req = self._is_required_field(field)
-                    if is_req:
-                        return True
-                has_err = field.locator(".artdeco-inline-feedback--error, [aria-invalid='true'], .fb-form-element--error, [data-test-form-element-error]").count() > 0
-                if has_err:
+                # If an element has no editable controls (inputs/selects/textareas), it cannot be unfilled
+                if field.locator("input, select, textarea").count() == 0:
+                    continue
+                
+                # Check for explicit validation errors first
+                if self._field_has_error(field):
                     return True
+
+                # Check if strictly required field is empty
+                is_req = self._is_required_field(field)
+                if is_req:
+                    val = self._extract_filled_value(field)
+                    if not val or not str(val).strip():
+                        return True
         except:
             pass
         return False
@@ -172,11 +261,7 @@ class SmartFormFiller:
                     if not question_text:
                         continue
                     
-                    has_error = False
-                    try:
-                        has_error = field.locator(".artdeco-inline-feedback--error, [aria-invalid='true'], .fb-form-element--error, [data-test-form-element-error]").count() > 0
-                    except:
-                        pass
+                    has_error = self._field_has_error(field)
                     
                     existing_value = self._extract_filled_value(field)
                     if existing_value and str(existing_value).strip() and not force_refill and not has_error:
@@ -185,8 +270,13 @@ class SmartFormFiller:
                     
                     is_required = self._is_required_field(field)
                     field_type = self._detect_field_type(field)
-                    if field_type == "file":
-                        logger.debug(f"Field {i+1}: File/Resume upload field. Handled by workflow.", step="fill_fields")
+                    if field_type in ["file", "education_section", "work_experience_section", "button_container"] or field.locator("input, select, textarea").count() == 0:
+                        if field_type == "education_section":
+                            logger.info(f"Field {i+1}: Education section - skipping 'Add more' button as candidate education is on profile.", step="fill_fields")
+                        elif field_type == "work_experience_section":
+                            logger.info(f"Field {i+1}: Work experience section - skipping 'Add more' button as experience is on profile.", step="fill_fields")
+                        elif field_type == "file":
+                            logger.debug(f"Field {i+1}: File/Resume upload field. Handled by workflow.", step="fill_fields")
                         continue
                         
                     html_spec = self._inspect_html_element_spec(field, field_type, question_text)
@@ -322,12 +412,11 @@ class SmartFormFiller:
             
             unfilled_count = 0
             for i, field in enumerate(fields_pass2):
+                field_type = self._detect_field_type(field)
+                if field_type in ["file", "education_section", "work_experience_section", "button_container"] or field.locator("input, select, textarea").count() == 0:
+                    continue
                 val = self._extract_filled_value(field)
-                has_error = False
-                try:
-                    has_error = field.locator(".artdeco-inline-feedback--error, [aria-invalid='true'], .fb-form-element--error, [data-test-form-element-error]").count() > 0
-                except:
-                    pass
+                has_error = self._field_has_error(field)
 
                 # If field remains empty or in error state
                 if not val or has_error:
@@ -381,6 +470,14 @@ class SmartFormFiller:
             
             # Determine field type
             field_type = self._detect_field_type(field)
+            if field_type in ["file", "education_section", "work_experience_section"]:
+                if field_type == "education_section":
+                    logger.info(f"Field {field_num}: Education section - skipping 'Add more' button as candidate education is on profile.", step="process_field")
+                    return "skipped_education"
+                elif field_type == "work_experience_section":
+                    logger.info(f"Field {field_num}: Work experience section - skipping 'Add more' button.", step="process_field")
+                    return "skipped_work_experience"
+                return "skipped_file"
             
             # Extract HTML data type (INTEGER, SELECT_OPTION, RADIO_OPTION, BOOLEAN, SHORT_TEXT, LONG_TEXT)
             data_type = self._extract_html_data_type(field, field_type, question_text)
@@ -441,23 +538,39 @@ class SmartFormFiller:
         return False
     
     def _extract_question(self, field: Locator) -> str:
-        """Extract question text from field (cleanly)"""
+        """Extract question text from field cleanly using labels, ARIA attributes, and semantic cues"""
         try:
-            # Try specific label elements first for cleaner keys
+            # Skip file / resume sections completely
+            if self._is_resume_or_file_section(field):
+                return ""
+
+            # 1. Check aria-label attribute on inputs/selects/textareas inside this field (cleanest accessible label)
+            for ctrl in field.locator("input:not([type='hidden']), select, textarea").all():
+                al = ctrl.get_attribute("aria-label")
+                if al:
+                    al_clean = re.sub(r'\s*Required\s*', '', al, flags=re.IGNORECASE).strip()
+                    al_clean = re.sub(r'\s*\*+\s*$', '', al_clean).strip()
+                    if len(al_clean) > 2:
+                        return al_clean[:200]
+
+            # 2. Try specific label/question elements
             label_selectors = [
                 "span.fb-dash-form-element__label",
                 ".fb-dash-form-element__label",
+                "[data-test-form-builder-component-label]",
+                ".artdeco-text-input--label",
                 "label",
                 "legend",
                 ".jobs-easy-apply-form-section__grouping h3",
-                ".fb-dash-form-element__label-text"
+                ".fb-dash-form-element__label-text",
+                "p:not([data-testid*='helper']):not(:has-text('Invalid input'))"
             ]
             
             for selector in label_selectors:
                 label_el = field.locator(selector).first
                 if label_el.count() > 0:
                     text = label_el.inner_text(timeout=500).strip()
-                    if text:
+                    if text and not any(err in text.lower() for err in ["invalid input", "characters", "helper"]):
                         # Remove "Required" and extra whitespace
                         text = re.sub(r'\s*Required\s*', '', text, flags=re.IGNORECASE)
                         text = re.sub(r'\s*\*+\s*$', '', text) # Remove trailing asterisks
@@ -465,22 +578,168 @@ class SmartFormFiller:
                         if len(text) > 3: # Ignore very short labels
                             return text[:200]
 
-            # Fallback to full text but filter out common noise
+            # 3. Check aria-labelledby attribute
+            for ctrl in field.locator("input:not([type='hidden']), select, textarea").all():
+                lbl_ids = ctrl.get_attribute("aria-labelledby")
+                if lbl_ids:
+                    for single_id in lbl_ids.split():
+                        try:
+                            target = self.page.locator(f"#{single_id}").first
+                            if target.count() > 0:
+                                t_text = target.text_content(timeout=500).strip()
+                                t_text = re.sub(r'\s*Required\s*', '', t_text, flags=re.IGNORECASE).strip()
+                                if len(t_text) > 2:
+                                    return t_text[:200]
+                        except Exception:
+                            pass
+
+            # 4. Check semantic cues from id or name attributes
+            for ctrl in field.locator("input:not([type='hidden']), select").all():
+                cid = (ctrl.get_attribute("id") or "").lower()
+                cname = (ctrl.get_attribute("name") or "").lower()
+                cattr = cid + " " + cname
+                if "countrycode" in cattr or "country-code" in cattr:
+                    return "Phone country code"
+                if "phonenumber" in cattr or "phone-number" in cattr or "mobilephone" in cattr:
+                    return "Mobile phone number"
+                if "email" in cattr:
+                    return "Email address"
+                if "firstname" in cattr or "first-name" in cattr:
+                    return "First name"
+                if "lastname" in cattr or "last-name" in cattr:
+                    return "Last name"
+                if "city" in cattr or "location" in cattr:
+                    return "Location (city)"
+
+            # 5. Check placeholder attribute
+            for ctrl in field.locator("input:not([type='hidden']), textarea").all():
+                ph = ctrl.get_attribute("placeholder")
+                if ph:
+                    ph_clean = re.sub(r'\s*Required\s*', '', ph, flags=re.IGNORECASE).strip()
+                    if len(ph_clean) > 3 and not any(skip in ph_clean.lower() for skip in ["select", "type your", "enter your", "choose"]):
+                        return ph_clean[:200]
+
+            # 6. Fallback to full text of the field element
             text = field.text_content(timeout=1000)
             if text:
                 text = text.strip()
                 text = re.sub(r'\s*Required\s*', '', text, flags=re.IGNORECASE)
-                # Take first line that looks like a question
-                lines = [line.strip() for line in text.split('\n') if len(line.strip()) > 5]
+                lines = [line.strip() for line in text.split('\n') if len(line.strip()) > 3]
                 if lines:
                     return lines[0][:200]
         except:
             pass
         return "Unknown Question"
     
+    def _is_education_section(self, field: Locator) -> bool:
+        """
+        Check if field grouping represents the card-based Education section
+        (where the candidate's degrees are listed and an 'Add'/'Add more' button is shown).
+        Excludes standard screening questions like 'Have you completed Bachelor's Degree? (Yes/No)' or dropdowns.
+        """
+        try:
+            # If the field contains radio inputs or a select dropdown, it is a screening question, NOT the card section
+            if field.locator("input[type='radio'], select").count() > 0:
+                return False
+                
+            # Check for header/h3/legend/title with 'education'
+            header = field.locator("h3, legend, .jobs-easy-apply-form-section__grouping-header, .fb-dash-form-element__label").first
+            if header.count() > 0:
+                h_text = header.inner_text().strip().lower()
+                if "education" in h_text:
+                    return True
+            
+            # Check for any button with 'add' inside the field in education context
+            for btn in field.locator("button").all():
+                try:
+                    btn_text = (btn.text_content() or "").strip().lower()
+                    aria_label = (btn.get_attribute("aria-label") or "").strip().lower()
+                    if "add" in btn_text or "add" in aria_label:
+                        all_text = (field.text_content() or "").lower()
+                        if any(k in all_text for k in ["education", "degree", "school", "institution", "college", "university"]):
+                            return True
+                except Exception:
+                    pass
+                
+            # Check text content starting with or containing Education
+            text = field.text_content(timeout=500)
+            if text:
+                t_lower = text.strip().lower()
+                if ("education" in t_lower or "degree" in t_lower or "school" in t_lower) and any(k in t_lower for k in ["add", "institution", "bachelor", "master", "college"]):
+                    # Ensure no normal text/select inputs exist (i.e. it's the section container)
+                    if field.locator("input:not([type='hidden']), select, textarea").count() == 0:
+                        return True
+        except:
+            pass
+        return False
+
+    def _is_work_experience_section(self, field: Locator) -> bool:
+        """
+        Check if field grouping represents the card-based Work Experience section.
+        Excludes questions like 'How many years of work experience do you have?'.
+        """
+        try:
+            if field.locator("input[type='radio'], select, input[type='number']").count() > 0:
+                return False
+                
+            header = field.locator("h3, legend, .jobs-easy-apply-form-section__grouping-header").first
+            if header.count() > 0:
+                h_text = header.inner_text().strip().lower()
+                if "work experience" in h_text:
+                    return True
+                    
+            if field.locator("button[aria-label*='Add work experience'], button[aria-label*='Add experience'], button:has-text('Add work experience'), button:has-text('Add experience')").count() > 0:
+                return True
+        except:
+            pass
+        return False
+
+    def _is_resume_or_file_section(self, field: Locator) -> bool:
+        """
+        Check if element represents a resume card, document upload, or CV file section.
+        These are managed automatically by the workflow resume manager and should never be treated as questions.
+        """
+        try:
+            # Check class attributes for document upload / resume cards
+            cls = (field.get_attribute("class") or "").lower()
+            if any(k in cls for k in ["jobs-document-upload", "document-upload", "resume-card", "file-upload"]):
+                return True
+
+            # Check child elements
+            if field.locator("input[type='file'], [class*='jobs-document-upload'], [class*='document-upload'], [data-test-document-upload-card]").count() > 0:
+                return True
+
+            # Check if element text is a filename (e.g. Adarsh_Teja_aiml.pdf)
+            text = (field.text_content(timeout=300) or "").lower()
+            if any(ext in text for ext in [".pdf", ".docx", ".doc", ".rtf"]):
+                return True
+
+            if ("resume" in text or "cover letter" in text) and any(w in text for w in ["upload", "choose", "file", "document"]):
+                if field.locator("select, textarea").count() == 0:
+                    return True
+        except Exception:
+            pass
+        return False
+
     def _detect_field_type(self, field: Locator) -> str:
         """Detect the type of form field"""
         try:
+            # Check for Resume or File upload card
+            if self._is_resume_or_file_section(field):
+                return "file"
+
+            # Check for standalone button container (e.g. Add education / Add more)
+            if field.locator("button:has-text('Add'), button[aria-label*='Add']").count() > 0 and field.locator("input, select, textarea").count() == 0:
+                return "education_section"
+
+            # Check for Education section (do not click Add more button)
+            if self._is_education_section(field):
+                return "education_section"
+                
+            # Check for Work Experience section (do not click Add more button)
+            if self._is_work_experience_section(field):
+                return "work_experience_section"
+
             # Check for file upload / document upload redesign cards
             if field.locator("input[type='file']").count() > 0 or field.locator(".jobs-document-upload-redesign-card__container").count() > 0:
                 return "file"
@@ -517,6 +776,19 @@ class SmartFormFiller:
     def _inspect_html_element_spec(self, field: Locator, field_type: str, question_text: str = "") -> dict:
         """Inspect the exact live HTML element in the DOM and return detailed specifications"""
         try:
+            if field_type in ["education_section", "work_experience_section"]:
+                section_name = "Education" if field_type == "education_section" else "Work Experience"
+                return {
+                    "tag": "<section>",
+                    "html_type": field_type,
+                    "expected_data_type": "SECTION",
+                    "description": f"{section_name} Section",
+                    "options": [],
+                    "placeholder": "",
+                    "error_text": "",
+                    "details": f"{section_name} section (Profile data preserved; Add more button bypassed)"
+                }
+
             dom_info = field.evaluate("""el => {
                 // 0. Check for visible inline error messages to detect exact page validation rules
                 const errorEl = el.querySelector('.artdeco-inline-feedback--error, [data-test-form-element-error], .fb-form-element--error');
@@ -939,24 +1211,28 @@ class SmartFormFiller:
         
         # 2. Contact
         if 'email' in question_lower:
-            return self.profile_data.get('email')
+            return self.profile_data.get('email') or self.candidate_profile.get('credentials', {}).get('email')
         
         if 'phone' in question_lower or 'mobile' in question_lower:
             if 'country' in question_lower or 'code' in question_lower:
-                return self.profile_data.get('country_code')
-            return self.profile_data.get('phone')
-        
+                return self.profile_data.get('country_code', '+91')
+            return self.profile_data.get('phone') or self.candidate_profile.get('credentials', {}).get('phone')
+
+        # Location / City
+        if 'city' in question_lower or 'location' in question_lower:
+            return self.profile_data.get('city') or self.learned_answers.get('Location (city)') or self.learned_answers.get('City') or 'Hyderabad'
+
         # 3. Experience & Skills
-        if 'years' in question_lower:
+        if 'years' in question_lower or 'experience' in question_lower:
             if 'python' in question_lower:
-                return self.profile_data.get('years_python')
+                return self.profile_data.get('years_python') or self.profile_data.get('years_experience', '1')
             if 'javascript' in question_lower or 'js' in question_lower:
-                return self.profile_data.get('years_javascript')
+                return self.profile_data.get('years_javascript') or '1'
             if 'react' in question_lower:
-                return self.profile_data.get('years_react')
-            if 'ml' in question_lower or 'machine learning' in question_lower:
-                return self.profile_data.get('years_ml')
-            return self.profile_data.get('years_experience')
+                return self.profile_data.get('years_react') or '1'
+            if 'ml' in question_lower or 'machine learning' in question_lower or 'ai' in question_lower:
+                return self.profile_data.get('years_ml') or self.profile_data.get('years_experience', '1')
+            return self.profile_data.get('years_experience', '1')
         
         # 4. Work Auth & Sponsorship (CRITICAL)
         if 'sponsor' in question_lower or 'visa' in question_lower:
@@ -1064,12 +1340,11 @@ class SmartFormFiller:
         try:
             fields = self._get_form_fields()
             for i, field in enumerate(fields):
+                field_type = self._detect_field_type(field)
+                if field_type in ["file", "education_section", "work_experience_section", "button_container"] or field.locator("input, select, textarea").count() == 0:
+                    continue
                 val = self._extract_filled_value(field)
-                has_error = False
-                try:
-                    has_error = field.locator(".artdeco-inline-feedback--error, [aria-invalid='true'], .fb-form-element--error, [data-test-form-element-error]").count() > 0
-                except:
-                    pass
+                has_error = self._field_has_error(field)
 
                 is_req = self._is_required_field(field)
 
@@ -1121,7 +1396,15 @@ class SmartFormFiller:
     def _extract_filled_value(self, field: Locator) -> str:
         """Extract the value that was filled in the field"""
         try:
-            # 0. Check for File / Document upload
+            # 0. Check for Education section (profile already contains education)
+            if self._is_education_section(field):
+                return "Education Provided (Profile)"
+                
+            # 0.1 Check for Work Experience section
+            if self._is_work_experience_section(field):
+                return "Work Experience Provided (Profile)"
+
+            # 0.2 Check for File / Document upload
             if field.locator("input[type='file']").count() > 0 or field.locator(".jobs-document-upload-redesign-card__container").count() > 0:
                 if field.locator(".jobs-document-upload-redesign-card__container--selected, [aria-label='Selected']").count() > 0:
                     return "Resume Selected"
@@ -1186,6 +1469,20 @@ class SmartFormFiller:
         for opt in options:
             if str(opt).strip().lower() == ans_lower:
                 return str(opt).strip()
+
+        # Country Dial Code Matching (e.g. "+91", "(+91)", "India", "Your Country (+91)")
+        dial_match = re.search(r'\+?\d{1,4}', ans_str)
+        if dial_match:
+            digits = dial_match.group().lstrip('+')
+            for opt in options:
+                opt_str = str(opt).strip()
+                if f"(+{digits})" in opt_str or f"+{digits}" in opt_str or f"({digits})" in opt_str:
+                    return opt_str
+        for country in ["india", "united states", "canada", "united kingdom", "australia", "germany", "france"]:
+            if country in ans_lower:
+                for opt in options:
+                    if country in str(opt).strip().lower():
+                        return str(opt).strip()
                 
         # 2. Boolean / Numeric Semantic Equivalence
         if ans_lower in ["0", "no", "false", "none", "nil", "n/a", "no offer", "not applicable"]:
@@ -1412,7 +1709,7 @@ class SmartFormFiller:
     def _fill_field(self, field: Locator, answer: str, field_type: str, data_type: str = None):
         """Fill the field with the answer, guaranteeing schema, typeahead, and data type compliance"""
         try:
-            if field_type == "file":
+            if field_type in ["file", "education_section", "work_experience_section"]:
                 return
                 
             # Extract live options for select / radio fields to ensure valid option selection
