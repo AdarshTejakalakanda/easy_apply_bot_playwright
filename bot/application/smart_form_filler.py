@@ -245,6 +245,11 @@ class SmartFormFiller:
             fields = self._get_form_fields()
             
             if not fields:
+                time.sleep(1.5)
+                self._scroll_modal_content()
+                fields = self._get_form_fields()
+
+            if not fields:
                 logger.debug("No form fields found on current page", step="fill_fields")
                 return True
                 
@@ -1336,7 +1341,7 @@ class SmartFormFiller:
             return suggested_answer if suggested_answer else None
 
     def handle_errored_fields(self):
-        """Find and prompt human to resolve any fields that currently have validation errors or are left unfilled"""
+        """Resolve any fields that currently have validation errors or are left unfilled via Local Cache -> LLM -> Human fallback"""
         try:
             fields = self._get_form_fields()
             for i, field in enumerate(fields):
@@ -1351,6 +1356,8 @@ class SmartFormFiller:
                 # If field has error or is an empty required field
                 if has_error or (is_req and not val):
                     question_text = self._extract_question(field)
+                    if not question_text:
+                        continue
                     field_type = self._detect_field_type(field)
                     data_type = self._extract_html_data_type(field, field_type, question_text)
                     options = self._extract_options(field, field_type) if field_type in ["select", "radio"] else None
@@ -1360,6 +1367,32 @@ class SmartFormFiller:
                     except:
                         pass
 
+                    # Step 1: Try Local Cache & Profile Match first
+                    resolved_answer = self._get_local_answer(question_text, field_type, options, data_type)
+                    if resolved_answer is not None:
+                        logger.info(f"✅ Errored field '{question_text}' resolved via profile/cache -> '{resolved_answer}'", step="handle_error")
+                        self._fill_field(field, resolved_answer, field_type, data_type)
+                        time.sleep(0.5)
+                        continue
+
+                    # Step 2: Try LLM reasoning with candidate resume & profile
+                    if self.llm_filler and self.llm_filler.is_enabled():
+                        logger.info(f"🤖 Querying LLM to resolve errored/unfilled field: '{question_text}'", step="handle_error")
+                        llm_decision = self.llm_filler.answer_field(question_text, field_type, options, data_type)
+                        if llm_decision:
+                            ans = llm_decision.get("answer")
+                            conf = llm_decision.get("confidence", 0.0)
+                            if ans and str(ans).strip().upper() != "HUMAN_INTERVENTION_REQUIRED" and conf >= 0.70:
+                                if data_type in ["INTEGER", "DECIMAL", "NUMBER"] or field_type == "number":
+                                    ans = self._clean_numeric_answer(ans, data_type)
+                                logger.info(f"✅ LLM answered errored field '{question_text}': '{ans}' (conf {conf:.2f})", step="handle_error")
+                                self.learned_answers[question_text] = ans
+                                self._save_learned_answers()
+                                self._fill_field(field, ans, field_type, data_type)
+                                time.sleep(0.5)
+                                continue
+
+                    # Step 3: Human popup ONLY if local cache AND LLM cannot resolve
                     logger.warning(f"🚨 Missing/Errored field: '{question_text}' - Triggering On-Screen Popup for resolution...", step="handle_error")
                     
                     suggested_answer = None
