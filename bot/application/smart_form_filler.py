@@ -124,6 +124,7 @@ class SmartFormFiller:
             controls = search_root.locator("input:not([type='hidden']):not([type='file']), select, textarea").all()
             if controls:
                 control_fields = []
+                seen_ctrl_ids = set()
                 for ctrl in controls:
                     try:
                         if not ctrl.is_visible():
@@ -133,12 +134,28 @@ class SmartFormFiller:
                         placeholder = (ctrl.get_attribute("placeholder") or "").lower()
                         if "semanticsearchbox" in comp_key or "describe the job you want" in placeholder:
                             continue
-                        # Find the enclosing question container that holds label/question text
-                        container = ctrl.locator("xpath=ancestor::div[p or label or legend or h3 or h4 or @componentkey][last()]").first
-                        if container.count() > 0:
+
+                        c_type = (ctrl.get_attribute("type") or "").lower()
+                        if c_type == "radio":
+                            group_name = ctrl.get_attribute("name") or ""
+                            container = ctrl.locator('xpath=ancestor::*[self::fieldset or @role="radiogroup" or (self::div and (p or legend))][1]').first
+                            if container.count() == 0:
+                                container = ctrl.locator('xpath=ancestor::div[1]').first
+                            grp_key = f"radio:{group_name}" if group_name else container
+                            if grp_key in seen_ctrl_ids:
+                                continue
+                            seen_ctrl_ids.add(grp_key)
                             control_fields.append(container)
                         else:
-                            control_fields.append(ctrl.locator("xpath=..").first)
+                            # Nearest enclosing container holding question label/p/legend
+                            container = ctrl.locator('xpath=ancestor::div[p or label or legend or @componentkey][1]').first
+                            if container.count() == 0:
+                                container = ctrl.locator('xpath=ancestor::div[1]').first
+                            ctrl_id = ctrl.get_attribute("id") or ctrl.get_attribute("componentkey") or ctrl.get_attribute("name") or ctrl
+                            if ctrl_id in seen_ctrl_ids:
+                                continue
+                            seen_ctrl_ids.add(ctrl_id)
+                            control_fields.append(container)
                     except Exception:
                         control_fields.append(ctrl)
                 raw_fields = raw_fields + control_fields
@@ -164,7 +181,7 @@ class SmartFormFiller:
                         if f.locator("input:not([type='hidden']), select, textarea").count() == 0:
                             continue
 
-                    ctrl_key = ctrl.get_attribute("id") or ctrl.get_attribute("name") or ctrl.get_attribute("aria-label") or f.element_handle()
+                    ctrl_key = ctrl.get_attribute("id") or ctrl.get_attribute("componentkey") or ctrl.get_attribute("name") or ctrl.get_attribute("aria-label") or f.element_handle()
                     if ctrl_key:
                         if ctrl_key in seen_ctrl_ids:
                             continue
@@ -1465,18 +1482,21 @@ class SmartFormFiller:
         if 'remote' in question_lower:
             return self.profile_data.get('willing_to_work_remote')
         
-        # 6. Salary
-        if 'salary' in question_lower or 'compensation' in question_lower:
+        # 6. Salary / CTC
+        if 'salary' in question_lower or 'compensation' in question_lower or 'ctc' in question_lower:
             if 'current' in question_lower:
-                return self.profile_data.get('current_salary')
-            return self.profile_data.get('expected_salary')
+                return self.profile_data.get('current_salary') or self.learned_answers.get('Mention your Current CTC') or '500000'
+            return self.profile_data.get('expected_salary') or self.learned_answers.get('Mention your Exp CTC') or '1000000'
 
         # 6.1 Degree / Qualification / Education level
         if any(k in question_lower for k in ['qualification', 'highest education', 'degree', 'level of education', 'highest level']):
             return self.profile_data.get('degree') or self.profile_data.get('education') or self.learned_answers.get('Highest Qualification Held') or "Bachelor's"
         
-        # 7. Availability / Start Date / Notice Period
-        if any(k in question_lower for k in ['start', 'notice period', 'immediate', 'available to start', 'within the next', '1-2 weeks', '1–2 weeks', 'start date']):
+        # 7. Availability / Notice Period / Joining Date
+        if 'notice' in question_lower or 'notice period' in question_lower:
+            return self.profile_data.get('notice_period') or 'Immediate (0 days)'
+
+        if any(k in question_lower for k in ['start', 'immediate', 'available to start', 'within the next', '1-2 weeks', '1–2 weeks', 'start date']):
             return "Yes"
 
         # 7.1 Prior / Past Employment with the Company
