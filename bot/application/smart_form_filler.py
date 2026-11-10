@@ -896,18 +896,41 @@ class SmartFormFiller:
                 }
                 
                 // 2. Radio Button Group
-                const radios = el.querySelectorAll('input[type="radio"]');
+                const radios = el.querySelectorAll('input[type="radio"], [role="radio"]');
                 if (radios.length > 0) {
-                    const labels = Array.from(el.querySelectorAll('label')).map(l => l.innerText.trim()).filter(Boolean);
+                    let opts = [];
+                    radios.forEach(r => {
+                        let t = "";
+                        const id = r.id;
+                        if (id) {
+                            const lbl = el.querySelector(`label[for="${id}"]`);
+                            if (lbl) t = lbl.innerText.trim();
+                        }
+                        if (!t) {
+                            const parentLbl = r.closest('label');
+                            if (parentLbl) t = parentLbl.innerText.trim();
+                        }
+                        if (!t && r.parentElement) {
+                            t = r.parentElement.innerText.trim();
+                        }
+                        if (!t) {
+                            t = r.value || r.getAttribute('aria-label') || "";
+                        }
+                        if (t && !opts.includes(t)) opts.push(t);
+                    });
+                    if (opts.length === 0) {
+                        const allLabels = Array.from(el.querySelectorAll('label')).map(l => l.innerText.trim()).filter(Boolean);
+                        opts = allLabels.length > 0 ? allLabels : ["Yes", "No"];
+                    }
                     return {
                         tag: '<input type="radio">',
                         html_type: 'radio',
                         expected_data_type: 'RADIO_OPTION',
                         description: 'Radio Button Choice',
-                        options: labels,
+                        options: opts,
                         placeholder: '',
                         error_text: errorText,
-                        details: `Select one option from: [${labels.join(', ')}]`
+                        details: `Select one option from: [${opts.join(', ')}]`
                     };
                 }
                 
@@ -1361,9 +1384,9 @@ class SmartFormFiller:
         if any(k in question_lower for k in ['qualification', 'highest education', 'degree', 'level of education', 'highest level']):
             return self.profile_data.get('degree') or self.profile_data.get('education') or self.learned_answers.get('Highest Qualification Held') or "Bachelor's"
         
-        # 7. Broad "Yes/No" Patterns
-        # REMOVED: No more blind "Yes" defaults to avoid "wrong answers".
-        # We now rely on the 4-6s wait window for unknown questions.
+        # 7. Availability / Start Date / Notice Period
+        if any(k in question_lower for k in ['start', 'notice period', 'immediate', 'available to start', 'within the next', '1-2 weeks', '1–2 weeks', 'start date']):
+            return "Yes"
             
         # 8. Demographic Defaults (often grouped at end)
         if 'gender' in question_lower:

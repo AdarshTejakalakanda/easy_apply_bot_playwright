@@ -19,12 +19,16 @@ class HumanPromptPopup:
                  data_type: str = None, html_spec: dict = None):
         self.question_text = question_text
         self.field_type = field_type
-        self.options = options or []
+        self.options = list(options) if options else []
         self.suggested_answer = suggested_answer or ""
         self.is_required = is_required
         self.timeout_seconds = timeout_seconds  # 10 minutes = 600s
         self.time_left = timeout_seconds
         self.data_type = data_type or field_type.upper()
+        
+        # Ensure radio / boolean questions always present selectable choices (e.g. Yes / No)
+        if (self.field_type in ["radio", "checkbox"] or self.data_type.upper() in ["RADIO_OPTION", "BOOLEAN"]) and not self.options:
+            self.options = ["Yes", "No"]
         self.html_spec = html_spec or {}
         
         self.result = None
@@ -118,19 +122,26 @@ class HumanPromptPopup:
                 lbl3.pack(anchor="w", pady=(2, 0))
 
             # Input Section
-            self.selected_val = tk.StringVar(value=self.suggested_answer)
+            if (self.field_type in ["radio", "checkbox"] or self.data_type in ["RADIO_OPTION", "BOOLEAN"]) and not self.options:
+                self.options = ["Yes", "No"]
 
-            if self.options and self.field_type in ["select", "radio"]:
-                ans_title = tk.Label(content_frame, text="SELECT AN OPTION:", font=("Segoe UI", 9, "bold"), fg="#a6e3a1", bg="#181825")
+            initial_val = self.suggested_answer
+            if not initial_val and self.options and self.field_type in ["select", "radio"]:
+                initial_val = self.options[0]
+
+            self.selected_val = tk.StringVar(value=initial_val)
+
+            if self.options and (self.field_type in ["select", "radio", "checkbox"] or self.data_type in ["RADIO_OPTION", "BOOLEAN"]):
+                ans_title = tk.Label(content_frame, text="SELECT AN OPTION (RADIO / CHOICE):", font=("Segoe UI", 9, "bold"), fg="#a6e3a1", bg="#181825")
                 ans_title.pack(anchor="w")
                 
                 # If few options (<= 4), show radio buttons, else dropdown
-                if len(self.options) <= 4:
+                if len(self.options) <= 5:
                     opts_frame = tk.Frame(content_frame, bg="#181825")
                     opts_frame.pack(fill="x", pady=(4, 8))
                     for opt in self.options:
                         rb = tk.Radiobutton(opts_frame, text=opt, variable=self.selected_val, value=opt,
-                                            font=("Segoe UI", 10), fg="#cdd6f4", bg="#181825", 
+                                            font=("Segoe UI", 10, "bold"), fg="#cdd6f4", bg="#181825", 
                                             selectcolor="#313244", activebackground="#181825", activeforeground="#a6e3a1")
                         rb.pack(anchor="w", pady=2)
                 else:

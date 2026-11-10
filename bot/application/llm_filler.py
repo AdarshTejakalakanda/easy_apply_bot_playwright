@@ -12,19 +12,12 @@ logger = logging.getLogger("bot.application.llm_filler")
 
 class LLMFiller:
     # Supported Gemini text/JSON generation models in priority order for fallback
-    # Prioritizes Google's recommended models (Gemini 3.8 Flash and Gemini 3.5 Flash-Lite)
+    # Prioritizes fast, reliable models verified against Gemini API
     DEFAULT_GEMINI_MODELS = [
-        "gemini-3.8-flash",
-        "gemini-3.6-flash",
-        "gemini-3.5-flash-lite",
-        "gemini-3.1-flash-lite",
-        "gemini-3.1-pro-preview",
-        "gemini-3-flash-preview",
         "gemini-2.5-flash",
         "gemini-2.5-flash-lite",
-        "gemini-2.5-pro",
         "gemini-2.0-flash",
-        "gemini-2.0-flash-lite"
+        "gemini-1.5-flash"
     ]
 
     def __init__(self, candidate_profile: dict):
