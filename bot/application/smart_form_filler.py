@@ -138,7 +138,13 @@ class SmartFormFiller:
                         c_type = (ctrl.get_attribute("type") or "").lower()
                         if c_type == "radio":
                             group_name = ctrl.get_attribute("name") or ""
-                            container = ctrl.locator('xpath=ancestor::*[self::fieldset or @role="radiogroup" or (self::div and (p or legend))][1]').first
+                            container = None
+                            if group_name:
+                                group_ancestor = ctrl.locator(f'xpath=ancestor::*[count(.//input[@name="{group_name}"]) > 1][1]').first
+                                if group_ancestor.count() > 0:
+                                    container = group_ancestor
+                            if not container or container.count() == 0:
+                                container = ctrl.locator('xpath=ancestor::*[self::fieldset or @role="radiogroup" or @data-test-form-builder-radio-button-form-component or contains(@class, "jobs-easy-apply-form-section__grouping") or contains(@class, "fb-dash-form-element") or (self::div and (p or legend or label))][1]').first
                             if container.count() == 0:
                                 container = ctrl.locator('xpath=ancestor::div[1]').first
                             grp_key = f"radio:{group_name}" if group_name else container
@@ -986,29 +992,75 @@ class SmartFormFiller:
                 const radios = el.querySelectorAll('input[type="radio"], [role="radio"]');
                 if (radios.length > 0) {
                     let opts = [];
+                    const isInvalid = (str) => {
+                        if (!str) return true;
+                        const s = str.trim().toLowerCase();
+                        return ['on', 'off', 'none', 'null', 'undefined', 'true', 'false', ''].includes(s);
+                    };
+
                     radios.forEach(r => {
                         let t = "";
                         const id = r.id;
                         if (id) {
-                            const lbl = el.querySelector(`label[for="${id}"]`);
-                            if (lbl) t = lbl.innerText.trim();
+                            try {
+                                const escaped = (window.CSS && CSS.escape) ? CSS.escape(id) : id.replace(/([ #;&,.+*~':"!^$[\]()=>|/@])/g, '\\$1');
+                                const lbl = el.querySelector(`label[for="${escaped}"]`) || document.querySelector(`label[for="${escaped}"]`);
+                                if (lbl) t = lbl.innerText.trim();
+                            } catch(e) {}
                         }
-                        if (!t) {
+                        if (!t || isInvalid(t)) {
                             const parentLbl = r.closest('label');
                             if (parentLbl) t = parentLbl.innerText.trim();
                         }
-                        if (!t && r.parentElement) {
-                            t = r.parentElement.innerText.trim();
+                        if (!t || isInvalid(t)) {
+                            const nextEl = r.nextElementSibling;
+                            if (nextEl && (nextEl.tagName === 'LABEL' || nextEl.tagName === 'SPAN' || nextEl.querySelector('label, span'))) {
+                                t = nextEl.innerText.trim();
+                            }
                         }
-                        if (!t) {
-                            t = r.value || r.getAttribute('aria-label') || "";
+                        if (!t || isInvalid(t)) {
+                            const prevEl = r.previousElementSibling;
+                            if (prevEl && (prevEl.tagName === 'LABEL' || prevEl.tagName === 'SPAN')) {
+                                t = prevEl.innerText.trim();
+                            }
                         }
-                        if (t && !opts.includes(t)) opts.push(t);
+                        if (!t || isInvalid(t)) {
+                            const parentWrap = r.closest('.fb-radio, [data-test-radio-form-component], li, div');
+                            if (parentWrap) {
+                                const wrapLbl = parentWrap.querySelector('label, [data-test-text-selectable-option__label], span');
+                                if (wrapLbl) t = wrapLbl.innerText.trim();
+                            }
+                        }
+                        if (!t || isInvalid(t)) {
+                            const aria = r.getAttribute('aria-label');
+                            if (aria && !isInvalid(aria)) t = aria.trim();
+                        }
+                        if (!t || isInvalid(t)) {
+                            const val = r.getAttribute('value');
+                            if (val && !isInvalid(val)) t = val.trim();
+                        }
+                        if (t && !isInvalid(t) && !opts.includes(t)) {
+                            opts.push(t);
+                        }
                     });
+
+                    // Purge invalid tokens (like browser default 'on', 'off')
+                    opts = opts.filter(o => !isInvalid(o));
+
                     if (opts.length === 0) {
-                        const allLabels = Array.from(el.querySelectorAll('label')).map(l => l.innerText.trim()).filter(Boolean);
-                        opts = allLabels.length > 0 ? allLabels : ["Yes", "No"];
+                        const allLabels = Array.from(el.querySelectorAll('label, [data-test-text-selectable-option__label]'))
+                            .map(l => l.innerText.trim())
+                            .filter(t => !isInvalid(t));
+                        if (allLabels.length > 0) {
+                            opts = Array.from(new Set(allLabels));
+                        }
                     }
+
+                    // For binary radio sets (e.g. Yes/No), ensure valid choices rather than empty or single 'on'
+                    if (opts.length === 0 || (radios.length === 2 && opts.length < 2)) {
+                        opts = ["Yes", "No"];
+                    }
+
                     return {
                         tag: '<input type="radio">',
                         html_type: 'radio',
@@ -1164,41 +1216,70 @@ class SmartFormFiller:
                     if text and "select" not in text.lower() and len(text) > 0:
                         options.append(text)
             elif field_type == "radio":
-                # 1. Extract from radio inputs and associated label/wrapper elements
+                invalid_tokens = {"on", "off", "none", "null", "undefined", "true", "false", ""}
                 radios = field.locator("input[type='radio'], [role='radio']").all()
                 for r in radios:
                     opt_text = ""
                     r_id = r.get_attribute("id")
                     if r_id:
-                        lbl = field.locator(f"label[for='{r_id}']").first
-                        if lbl.count() > 0:
-                            opt_text = lbl.inner_text().strip()
-                    if not opt_text:
+                        try:
+                            lbl = field.locator(f"label[for='{r_id}']").first
+                            if lbl.count() > 0:
+                                opt_text = lbl.inner_text().strip()
+                        except Exception:
+                            pass
+                    if not opt_text or opt_text.lower() in invalid_tokens:
+                        # Sibling label or span
+                        try:
+                            sibling_lbl = r.locator("xpath=following-sibling::label | following-sibling::span | preceding-sibling::label | preceding-sibling::span").first
+                            if sibling_lbl.count() > 0:
+                                opt_text = sibling_lbl.inner_text().strip()
+                        except Exception:
+                            pass
+                    if not opt_text or opt_text.lower() in invalid_tokens:
                         parent_lbl = r.locator("xpath=ancestor::label[1]").first
                         if parent_lbl.count() > 0:
                             opt_text = parent_lbl.inner_text().strip()
-                    if not opt_text:
-                        parent_wrap = r.locator("xpath=..").first
+                    if not opt_text or opt_text.lower() in invalid_tokens:
+                        parent_wrap = r.locator("xpath=ancestor::*[contains(@class, 'fb-radio') or self::li or self::div][1]").first
                         if parent_wrap.count() > 0:
-                            opt_text = parent_wrap.inner_text().strip()
-                    if not opt_text:
-                        opt_text = r.get_attribute("aria-label") or r.get_attribute("value") or ""
+                            wrap_lbl = parent_wrap.locator("label, [data-test-text-selectable-option__label], span").first
+                            if wrap_lbl.count() > 0:
+                                opt_text = wrap_lbl.inner_text().strip()
+                            else:
+                                opt_text = parent_wrap.inner_text().strip()
+                    if not opt_text or opt_text.lower() in invalid_tokens:
+                        aria = r.get_attribute("aria-label")
+                        if aria and aria.strip().lower() not in invalid_tokens:
+                            opt_text = aria.strip()
+                    if not opt_text or opt_text.lower() in invalid_tokens:
+                        val = r.get_attribute("value")
+                        if val and val.strip().lower() not in invalid_tokens:
+                            opt_text = val.strip()
                     
                     if opt_text:
                         # Clean asterisks or required tags
                         opt_text = re.sub(r'\s*Required\s*', '', opt_text, flags=re.IGNORECASE).strip()
                         opt_text = re.sub(r'\s*\*+\s*$', '', opt_text).strip()
-                        if opt_text and opt_text not in options:
+                        if opt_text and opt_text.lower() not in invalid_tokens and opt_text not in options:
                             options.append(opt_text)
 
                 # 2. Fallback to labels
                 if not options:
-                    labels = field.locator("label, [role='radio']").all()
+                    labels = field.locator("label, [role='radio'], [data-test-text-selectable-option__label]").all()
                     for label in labels:
                         text = label.inner_text().strip()
                         text = re.sub(r'\s*Required\s*', '', text, flags=re.IGNORECASE).strip()
-                        if text and text not in options:
+                        text = re.sub(r'\s*\*+\s*$', '', text).strip()
+                        if text and text.lower() not in invalid_tokens and text not in options:
                             options.append(text)
+
+                # Purge invalid tokens (like browser default 'on', 'off')
+                options = [o for o in options if o.strip().lower() not in invalid_tokens]
+
+                # 3. Default to Yes / No if options empty or incomplete for a binary radio group
+                if len(options) == 0 or (len(radios) == 2 and len(options) < 2):
+                    options = ["Yes", "No"]
         except Exception as e:
             logger.debug(f"Failed to extract options: {e}", step="extract_options")
         return options
@@ -2009,8 +2090,15 @@ class SmartFormFiller:
             
         # 3. Radio / Select / Dropdown Fields (Must match target available options)
         if field_type in ["radio", "select"] or data_type_upper in ["RADIO_OPTION", "SELECT_OPTION"]:
-            if options:
-                return self._match_best_option(ans_str, options)
+            valid_opts = [o for o in (options or []) if str(o).strip().lower() not in ["on", "off", "none", "null", "undefined", ""]]
+            if valid_opts:
+                return self._match_best_option(ans_str, valid_opts)
+            if field_type == "radio" or data_type_upper == "RADIO_OPTION":
+                ans_l = ans_str.lower()
+                if ans_l in ["1", "yes", "true", "y"]:
+                    return "Yes"
+                if ans_l in ["0", "no", "false", "n"]:
+                    return "No"
             return ans_str
             
         # 4. Boolean Fields
@@ -2232,10 +2320,18 @@ class SmartFormFiller:
                         pass
                         
                     try:
+                        sibling_lbl = r.locator("xpath=following-sibling::label | following-sibling::span | preceding-sibling::label | preceding-sibling::span").first
+                        if sibling_lbl.count() > 0:
+                            t = sibling_lbl.inner_text().strip().lower()
+                            if t and t not in ["on", "off"]: candidate_texts.append(t)
+                    except:
+                        pass
+
+                    try:
                         parent_wrap = r.locator("xpath=..").first
                         if parent_wrap.count() > 0:
                             t = parent_wrap.inner_text().strip().lower()
-                            if t: candidate_texts.append(t)
+                            if t and t not in ["on", "off"]: candidate_texts.append(t)
                     except:
                         pass
 
@@ -2334,6 +2430,39 @@ class SmartFormFiller:
                                 break
                             except:
                                 continue
+
+                # Fallback 2: Index-based selection for binary Yes/No radio groups
+                if not selected and len(radios) >= 2:
+                    try:
+                        target_radio = None
+                        if is_target_yes:
+                            target_radio = radios[0]
+                        elif is_target_no:
+                            target_radio = radios[1]
+                        
+                        if target_radio:
+                            target_radio.scroll_into_view_if_needed(timeout=1000)
+                            try:
+                                target_radio.check(force=True, timeout=1000)
+                            except:
+                                pass
+                            target_radio.evaluate("""el => {
+                                el.checked = true;
+                                if (el.setAttribute) el.setAttribute('aria-checked', 'true');
+                                el.dispatchEvent(new Event('click', { bubbles: true }));
+                                el.dispatchEvent(new Event('change', { bubbles: true }));
+                                el.dispatchEvent(new Event('input', { bubbles: true }));
+                            }""")
+                            try:
+                                parent_lbl = target_radio.locator("xpath=ancestor::*[self::label or contains(@class, 'fb-radio') or self::div][1]").first
+                                if parent_lbl.count() > 0:
+                                    parent_lbl.click(force=True, timeout=1000)
+                            except:
+                                pass
+                            selected = True
+                            logger.info(f"✅ Radio selected via index fallback ({'0 -> Yes' if is_target_yes else '1 -> No'})", step="fill_field")
+                    except Exception as e:
+                        logger.debug(f"Index fallback radio selection error: {e}", step="fill_field")
                     
             elif field_type == "checkbox":
                 checkbox = field.locator("input[type='checkbox'], [role='checkbox']").first

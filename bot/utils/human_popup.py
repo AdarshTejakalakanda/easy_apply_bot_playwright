@@ -19,7 +19,9 @@ class HumanPromptPopup:
                  data_type: str = None, html_spec: dict = None):
         self.question_text = question_text
         self.field_type = field_type
-        self.options = list(options) if options else []
+        # Sanitize options: filter out browser-default artifacts like "on", "off"
+        raw_opts = list(options) if options else []
+        self.options = [str(o).strip() for o in raw_opts if str(o).strip().lower() not in ["on", "off", "none", "null", "undefined", ""]]
         self.suggested_answer = suggested_answer or ""
         self.is_required = is_required
         self.timeout_seconds = timeout_seconds  # 10 minutes = 600s
@@ -27,9 +29,20 @@ class HumanPromptPopup:
         self.data_type = data_type or field_type.upper()
         
         # Ensure radio / boolean questions always present selectable choices (e.g. Yes / No)
-        if (self.field_type in ["radio", "checkbox"] or self.data_type.upper() in ["RADIO_OPTION", "BOOLEAN"]) and not self.options:
+        is_choice_type = (self.field_type in ["radio", "checkbox"] or self.data_type.upper() in ["RADIO_OPTION", "BOOLEAN"])
+        if is_choice_type and len(self.options) < 2:
             self.options = ["Yes", "No"]
-        self.html_spec = html_spec or {}
+
+        self.html_spec = dict(html_spec) if html_spec else {}
+        # Also sanitize html_spec options & details so the popup card doesn't show "Select one option from: [on]"
+        if self.html_spec:
+            raw_spec_opts = self.html_spec.get('options', [])
+            spec_opts = [str(o).strip() for o in raw_spec_opts if str(o).strip().lower() not in ["on", "off", "none", "null", "undefined", ""]]
+            if is_choice_type and len(spec_opts) < 2:
+                spec_opts = ["Yes", "No"]
+            self.html_spec['options'] = spec_opts
+            if spec_opts:
+                self.html_spec['details'] = f"Select one option from: [{', '.join(spec_opts)}]"
         
         self.result = None
         self.is_closed = False
@@ -122,12 +135,16 @@ class HumanPromptPopup:
                 lbl3.pack(anchor="w", pady=(2, 0))
 
             # Input Section
-            if (self.field_type in ["radio", "checkbox"] or self.data_type in ["RADIO_OPTION", "BOOLEAN"]) and not self.options:
+            is_choice_type = (self.field_type in ["radio", "checkbox"] or self.data_type in ["RADIO_OPTION", "BOOLEAN"])
+            if is_choice_type and len(self.options) < 2:
                 self.options = ["Yes", "No"]
 
             initial_val = self.suggested_answer
-            if not initial_val and self.options and self.field_type in ["select", "radio"]:
-                initial_val = self.options[0]
+            if is_choice_type and initial_val and initial_val.lower() in ["on", "off", "none", "null", "undefined"]:
+                initial_val = "Yes" if initial_val.lower() == "on" else "No"
+            if not initial_val or (self.options and initial_val not in self.options):
+                if self.options and self.field_type in ["select", "radio"]:
+                    initial_val = self.options[0]
 
             self.selected_val = tk.StringVar(value=initial_val)
 
