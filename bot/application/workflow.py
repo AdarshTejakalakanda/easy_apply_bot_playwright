@@ -43,6 +43,20 @@ class Workflow:
         if not element:
             return False
         try:
+            # Absolute Safety Guard: NEVER click "Add education", "Add experience", or any Add/New subform buttons
+            try:
+                btn_text = (element.text_content() or "").strip().lower()
+                aria_label = (element.get_attribute("aria-label") or "").strip().lower()
+                combined = f"{btn_text} {aria_label}".lower()
+                if any(bad in combined for bad in [
+                    "add education", "add degree", "add school", "+ education", "+ add education", 
+                    "add more education", "add work experience", "add experience", "+ experience",
+                    "add another education", "add institution", "add another school"
+                ]):
+                    logger.warning(f"🛑 BLOCKED click on Add Education/Experience button: '{combined}'", step="safe_click")
+                    return False
+            except Exception:
+                pass
             try:
                 element.scroll_into_view_if_needed(timeout=1000)
             except Exception:
@@ -528,11 +542,13 @@ class Workflow:
                 
                 # Auto-cancel any open "Add education" / "Add experience" blank subforms to prevent form blocking
                 try:
-                    edu_cancel = self.page.locator(".jobs-easy-apply-form-section__grouping button:has-text('Cancel'), .jobs-easy-apply-modal__content button[aria-label*='Cancel'], .jobs-easy-apply-modal__content button:has-text('Cancel')").first
-                    if edu_cancel.count() > 0 and edu_cancel.is_visible():
-                        logger.info("Dismissing open Add Education/Experience subform via Cancel button to preserve profile data", job_id=jobID, step="education")
-                        self._safe_click(edu_cancel)
-                        time.sleep(1)
+                    subform = self.page.locator("form[data-test-form-builder-subform], .jobs-easy-apply-form-section__grouping form, div[data-test-form-builder-component]:has(input#school), div[data-test-form-builder-component]:has(input#degree)").first
+                    if subform.count() > 0 and subform.is_visible():
+                        edu_cancel = subform.locator("button:has-text('Cancel'), button[aria-label*='Cancel']").first
+                        if edu_cancel.count() > 0 and edu_cancel.is_visible():
+                            logger.info("Dismissing open Add Education/Experience subform via Cancel button to preserve profile data", job_id=jobID, step="education")
+                            self._safe_click(edu_cancel)
+                            time.sleep(1)
                 except Exception as e:
                     logger.debug(f"Check cancel button note: {e}")
 
@@ -689,12 +705,13 @@ class Workflow:
 
                     elements = self.get_elements("review")
                     for element in elements:
-                        # Safety filter: NEVER click "Add" buttons
+                        # Safety filter: NEVER click "Add", "Education", "Degree", or "Experience" buttons
                         try:
                             btn_text = (element.text_content() or "").strip().lower()
                             aria_label = (element.get_attribute("aria-label") or "").strip().lower()
-                            if "add" in btn_text or "add" in aria_label:
-                                logger.debug(f"Skipping Add button: text='{btn_text}', aria='{aria_label}'", step="review")
+                            combined = f"{btn_text} {aria_label}"
+                            if any(k in combined for k in ["add", "education", "degree", "school", "experience", "+"]):
+                                logger.debug(f"Skipping Add/Education button in review: text='{btn_text}', aria='{aria_label}'", step="review")
                                 continue
                         except Exception:
                             pass
@@ -727,8 +744,9 @@ class Workflow:
                         try:
                             btn_text = (element.text_content() or "").strip().lower()
                             aria_label = (element.get_attribute("aria-label") or "").strip().lower()
-                            if "add" in btn_text or "add" in aria_label:
-                                logger.debug(f"Skipping Add button: text='{btn_text}', aria='{aria_label}'", step="next")
+                            combined = f"{btn_text} {aria_label}"
+                            if any(k in combined for k in ["add", "education", "degree", "school", "experience", "+"]):
+                                logger.debug(f"Skipping Add/Education button in next: text='{btn_text}', aria='{aria_label}'", step="next")
                                 continue
                         except Exception:
                             pass
@@ -759,9 +777,9 @@ class Workflow:
                     # Check direct text fallback for Submit / Review / Next buttons inside modal
                     try:
                         modal_box = self.page.locator("dialog[open], dialog[data-testid='dialog'], dialog, .jobs-easy-apply-modal, .artdeco-modal, div[role='dialog']").first
-                        modal_submit = modal_box.locator("button").filter(has_text=re.compile(r"Submit", re.I)).first
-                        modal_review = modal_box.locator("button").filter(has_text=re.compile(r"Review", re.I)).first
-                        modal_next = modal_box.locator("button").filter(has_text=re.compile(r"Next|Continue", re.I)).first
+                        modal_submit = modal_box.locator("button:not([aria-label*='education']):not([aria-label*='Add'])").filter(has_text=re.compile(r"^Submit", re.I)).first
+                        modal_review = modal_box.locator("button:not([aria-label*='education']):not([aria-label*='Add'])").filter(has_text=re.compile(r"^Review", re.I)).first
+                        modal_next = modal_box.locator("button:not([aria-label*='education']):not([aria-label*='Add'])").filter(has_text=re.compile(r"^(Next|Continue)$", re.I)).first
                         
                         if modal_submit.count() > 0 and modal_submit.is_visible():
                             logger.info("Found Submit button via modal fallback, clicking...", job_id=jobID, step="submit")

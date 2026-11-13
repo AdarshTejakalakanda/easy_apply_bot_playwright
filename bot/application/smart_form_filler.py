@@ -182,8 +182,8 @@ class SmartFormFiller:
                     if self._is_education_section(f) or self._is_work_experience_section(f):
                         continue
                         
-                    # Skip any element that contains an Add button and has no real inputs
-                    if f.locator("button:has-text('Add'), button[aria-label*='Add'], button:has-text('add')").count() > 0:
+                    # Skip any element that contains an Add button or Education button and has no real inputs
+                    if f.locator("button:has-text('Add'), button[aria-label*='Add'], button:has-text('add'), button[aria-label*='education'], button:has-text('education')").count() > 0:
                         if f.locator("input:not([type='hidden']), select, textarea").count() == 0:
                             continue
 
@@ -804,9 +804,13 @@ class SmartFormFiller:
             # If the field contains radio inputs or a select dropdown, it is a screening question, NOT the card section
             if field.locator("input[type='radio'], select").count() > 0:
                 return False
+
+            # Check if this field directly is or contains an Add Education / Add Degree / Add School button
+            if field.locator("button[aria-label*='education'], button:has-text('education'), button[aria-label*='degree'], button:has-text('degree'), button[aria-label*='school'], button:has-text('school')").count() > 0:
+                return True
                 
-            # Check for header/h3/legend/title with 'education'
-            header = field.locator("h3, legend, .jobs-easy-apply-form-section__grouping-header, .fb-dash-form-element__label").first
+            # Check for header/h1/h2/h3/h4/legend/title with 'education'
+            header = field.locator("h1, h2, h3, h4, legend, .jobs-easy-apply-form-section__grouping-header, .fb-dash-form-element__label").first
             if header.count() > 0:
                 h_text = header.inner_text().strip().lower()
                 if "education" in h_text:
@@ -817,7 +821,7 @@ class SmartFormFiller:
                 try:
                     btn_text = (btn.text_content() or "").strip().lower()
                     aria_label = (btn.get_attribute("aria-label") or "").strip().lower()
-                    if "add" in btn_text or "add" in aria_label:
+                    if any(k in btn_text or k in aria_label for k in ["add", "+", "new"]):
                         all_text = (field.text_content() or "").lower()
                         if any(k in all_text for k in ["education", "degree", "school", "institution", "college", "university"]):
                             return True
@@ -892,7 +896,7 @@ class SmartFormFiller:
                 return "file"
 
             # Check for standalone button container (e.g. Add education / Add more)
-            if field.locator("button:has-text('Add'), button[aria-label*='Add']").count() > 0 and field.locator("input, select, textarea").count() == 0:
+            if field.locator("button:has-text('Add'), button[aria-label*='Add'], button[aria-label*='education'], button:has-text('education'), button[aria-label*='degree'], button:has-text('degree')").count() > 0 and field.locator("input, select, textarea").count() == 0:
                 return "education_section"
 
             # Check for Education section (do not click Add more button)
