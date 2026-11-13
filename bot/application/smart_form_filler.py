@@ -1477,8 +1477,16 @@ class SmartFormFiller:
         # 2. Try LLM auto-filler if enabled
         if self.llm_filler.is_enabled():
             is_numeric_type = (data_type in ["INTEGER", "DECIMAL", "NUMBER"]) or (field_type == "number")
+            is_choice = (field_type in ["radio", "checkbox"] or (data_type and data_type.upper() in ["RADIO_OPTION", "BOOLEAN"]))
             llm_answer = self.llm_filler.get_answer(question_text, field_type, options, data_type)
             if llm_answer is not None:
+                ans_str = str(llm_answer).strip()
+                if ans_str.lower() in ["on", "off"]:
+                    if is_choice:
+                        llm_answer = "Yes" if ans_str.lower() == "on" else "No"
+                    else:
+                        llm_answer = None
+            if llm_answer is not None and str(llm_answer).strip().lower() not in ["on", "off", "none", "null", "undefined"]:
                 if is_numeric_type:
                     llm_answer = self._clean_numeric_answer(llm_answer, data_type)
                 # Cache it in the main learned answers file as well so it's persisted/available
@@ -1514,8 +1522,11 @@ class SmartFormFiller:
                 return self.profile_data.get('country_code', '+91')
             return self.profile_data.get('phone') or self.candidate_profile.get('credentials', {}).get('phone')
 
-        # Commute & In-Person Interview (must be checked before city/location)
-        if any(k in question_lower for k in ['commute', 'commuting', 'in person', 'in-person', 'attend in person', 'willing to travel', 'hybrid']):
+        # Commute, Travel & In-Person Interview (must be checked before city/location)
+        if any(k in question_lower for k in [
+            'commute', 'commuting', 'in person', 'in-person', 'attend in person', 
+            'travel', 'travel requirements', 'willing to travel', 'hybrid', 'on-site', 'onsite'
+        ]):
             return "Yes"
 
         # Relocation (must be checked before city/location)
@@ -1594,8 +1605,11 @@ class SmartFormFiller:
                 return "No"
             return "Yes"
 
-        # 7.3 Commute & In-Person Interview
-        if any(k in question_lower for k in ['commute', 'commuting', 'in person', 'in-person', 'attend in person', 'willing to travel', 'hybrid']):
+        # 7.3 Commute, Travel & In-Person Interview
+        if any(k in question_lower for k in [
+            'commute', 'commuting', 'in person', 'in-person', 'attend in person', 
+            'travel', 'travel requirements', 'willing to travel', 'hybrid', 'on-site', 'onsite'
+        ]):
             return "Yes"
 
         # 7.4 Consent / Privacy Policy / Future Job Opportunities / Terms / Agreement

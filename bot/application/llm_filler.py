@@ -228,16 +228,28 @@ Follow these strict guidelines when answering questions:
     def get_answer(self, question_text: str, field_type: str, options: list = None, data_type: str = None) -> str or None:
         """Get answer from LLM (using local cache first)"""
         cache_key = f"{question_text}|{field_type}|{data_type}|{json.dumps(options or [])}"
+        is_choice = (field_type in ["radio", "checkbox"] or (data_type and data_type.upper() in ["RADIO_OPTION", "BOOLEAN"]))
         
         if cache_key in self.cache:
-            logger.debug(f"LLM Cache Hit for: '{question_text}'", extra={"step": "llm_get_answer"})
-            return self.cache[cache_key]
+            cached_ans = str(self.cache[cache_key]).strip()
+            # Anti-contamination guard: never return raw browser default tokens like 'on'/'off'
+            if cached_ans.lower() in ["on", "off", "none", "null", "undefined"]:
+                del self.cache[cache_key]
+                self._save_cache()
+            else:
+                logger.debug(f"LLM Cache Hit for: '{question_text}'", extra={"step": "llm_get_answer"})
+                return cached_ans
 
         # Get answer from API
         answer = self._query_llm(question_text, field_type, options, data_type)
         if answer is not None:
-            self.cache[cache_key] = answer
-            self._save_cache()
+            ans_clean = str(answer).strip()
+            if is_choice and ans_clean.lower() in ["on", "off"]:
+                ans_clean = "Yes" if ans_clean.lower() == "on" else "No"
+            if ans_clean.lower() not in ["on", "off", "none", "null", "undefined"]:
+                self.cache[cache_key] = ans_clean
+                self._save_cache()
+            return ans_clean
         return answer
 
     def get_batch_answers(self, questions_batch: list) -> dict:
@@ -263,15 +275,19 @@ Follow these strict guidelines when answering questions:
 
             cache_key = f"{q_text}|{f_type}|{d_type}|{json.dumps(opts or [])}"
             if cache_key in self.cache:
-                logger.debug(f"LLM Cache Hit for: '{q_text}'", extra={"step": "llm_get_answer"})
-                results[item_id] = {
-                    "id": item_id,
-                    "answer": self.cache[cache_key],
-                    "confidence": 1.0,
-                    "explanation": "Loaded from local LLM cache"
-                }
-            else:
-                unresolved_for_api.append(item)
+                cached_ans = str(self.cache[cache_key]).strip()
+                if cached_ans.lower() in ["on", "off", "none", "null", "undefined"]:
+                    del self.cache[cache_key]
+                else:
+                    logger.debug(f"LLM Cache Hit for: '{q_text}'", extra={"step": "llm_get_answer"})
+                    results[item_id] = {
+                        "id": item_id,
+                        "answer": cached_ans,
+                        "confidence": 1.0,
+                        "explanation": "Loaded from local LLM cache"
+                    }
+                    continue
+            unresolved_for_api.append(item)
 
         if not unresolved_for_api:
             return results
@@ -296,7 +312,11 @@ Follow these strict guidelines when answering questions:
                     conf = 0.9
                 expl = res.get("explanation", "")
 
-                if conf >= 0.75 and ans.upper() != "HUMAN_INTERVENTION_REQUIRED":
+                is_choice = (f_type in ["radio", "checkbox"] or (d_type and d_type.upper() in ["RADIO_OPTION", "BOOLEAN"]))
+                if is_choice and ans.lower() in ["on", "off"]:
+                    ans = "Yes" if ans.lower() == "on" else "No"
+
+                if conf >= 0.75 and ans.upper() != "HUMAN_INTERVENTION_REQUIRED" and ans.lower() not in ["on", "off", "none", "null", "undefined"]:
                     cache_key = f"{q_text}|{f_type}|{d_type}|{json.dumps(opts or [])}"
                     self.cache[cache_key] = ans
 
